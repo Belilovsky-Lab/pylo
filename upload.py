@@ -4,6 +4,6 @@ from pylo.models.Meta_MLP import MetaMLP
 
 model = MetaMLP(39,32,1)
 
-model.load_state_dict(torch.load("/speed-scratch/p_janso/workspace/pylo/test.pt"))
+model.push_to_hub("Pauljanson002/test")
 
 breakpoint()
