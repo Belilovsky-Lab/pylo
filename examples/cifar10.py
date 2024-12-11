@@ -1,7 +1,8 @@
 import torch
 import torchvision
 import torch.nn as nn
-import torch.optim as optim
+# import torch.optim as optim
+import pylo.optim as optim
 from torchvision.models import resnet50
 from torch.utils.data import DataLoader
 from torchvision.datasets import CIFAR10
@@ -20,9 +21,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pretrained = False
 model = get_model(num_classes=10,pretrained=pretrained).to(device)
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+# optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.AdafacLO_naive(model.parameters())
 epochs = 30
-batch_size = 512
+batch_size = 256
 no_of_workers = 8
 # CIFAR10 transforms
 transform = torchvision.transforms.Compose([

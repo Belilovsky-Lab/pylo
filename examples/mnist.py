@@ -1,10 +1,12 @@
 import torch
 import torchvision
 import torch.nn as nn
-import torch.optim as optim
+# import torch.optim as optim
+import pylo.optim as optim
 from torchvision.datasets import MNIST
 from torch.utils.data import DataLoader
 import os
+
 class SimpleCNN(nn.Module):
     def __init__(self):
         super(SimpleCNN, self).__init__()
@@ -24,7 +26,8 @@ class SimpleCNN(nn.Module):
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SimpleCNN().to(device)
-optimizer = optim.Adam(model.parameters())
+# optimizer = optim.Adam(model.parameters())
+optimizer = optim.AdafacLO_naive(model.parameters())
 epochs = 10
 train_transforms = torchvision.transforms.Compose([
     torchvision.transforms.ToTensor(),
