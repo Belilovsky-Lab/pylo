@@ -135,7 +135,7 @@ args.momentum = 0.9
 args.data_dir = os.environ["DATA_PATH"]
 args.batch_size = 128
 args.no_shuffle = False
-args.epochs = 10
+args.epochs = 100
 args.log_interval = 1
 if args.load_base_shapes:
     print(f'loading base shapes from {args.load_base_shapes}')
