@@ -1,32 +1,33 @@
 import torch
 import torchvision
 import torch.nn as nn
+import sys
+sys.path.append(".")
 
 # import torch.optim as optim
 import pylo.optim as optim
-from torchvision.models import resnet50
+from examples.models.resnet import resnet18
 from torch.utils.data import DataLoader
 from torchvision.datasets import CIFAR10
 import os
-
+from mup import MuReadout,set_base_shapes
 
 def get_model(num_classes=10, pretrained=True):
-    model = resnet50(pretrained=pretrained)
+    model = resnet18()
     # Modify first conv layer for CIFAR10
-    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-    model.maxpool = nn.Identity()  # Remove maxpool
-
-    # Modify final layer
-    model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pretrained = False
 model = get_model(num_classes=10, pretrained=pretrained).to(device)
+set_base_shapes(model, "examples/base-shapes/resnet18.bsh")
+
 criterion = nn.CrossEntropyLoss()
 # optimizer = optim.Adam(model.parameters(), lr=0.001)
-optimizer = optim.AdafacLO_naive(model.parameters())
+# optimizer = optim.AdafacLO_naive(model.parameters())
+optimizer = optim.MuLO_naive(model.parameters(), lr=0.001)
+
 epochs = 30
 batch_size = 256
 no_of_workers = 8
