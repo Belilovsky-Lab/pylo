@@ -9,7 +9,8 @@ setup(
         "torchvision==0.19.1",
         "torchaudio==2.4.1",
         "huggingface_hub",
-        "safetensors==0.4.5"
+        "safetensors==0.4.5",
+        "mup==1.0.0",
     ],
     author="Paul Janson",
     description="A package for Pylo project",
