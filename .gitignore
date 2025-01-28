@@ -2,3 +2,5 @@ env
 *.egg-info
 *.pyc
 extern
+*.so
+build

@@ -1,3 +1,4 @@
+from pickletools import optimize
 import time
 import os
 import numpy as np
@@ -146,8 +147,9 @@ else:
     print('done')
 
 # optimizer = MuSGD(mynet.parameters(), lr=args.lr, momentum=args.momentum)
-from pylo.optim import MuLO_naive
-optimizer = MuLO_naive(mynet.parameters(), lr=args.lr)
+from pylo.optim import MuLO_naive,MuLO_CUDA
+# optimizer = MuLO_naive(mynet.parameters(), lr=args.lr)
+optimizer = MuLO_CUDA(mynet.parameters(), lr=args.lr)
 
 kwargs = {'num_workers': 1, 'pin_memory': True}
 
