@@ -1,6 +1,25 @@
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+import sys
 
+def get_build_config():
+    # Parse config settings from --config-settings
+    # pip passes config settings as --config-settings="--build-option=--cuda"
+    cuda_setting = False
+    for arg in sys.argv:
+        if arg.startswith('--build-option=--cuda'):
+            cuda_setting = True
+            sys.argv.remove(arg)
+            break
+        elif arg == '--cuda':  # For direct python setup.py install
+            cuda_setting = True
+            sys.argv.remove(arg)
+            break
+    return cuda_setting
+
+# Check build configuration
+enable_cuda = get_build_config()
+if enable_cuda:
+    from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 # Advanced optimization flags
 extra_compile_args = {
@@ -25,6 +44,20 @@ extra_compile_args = {
     ],
 }
 
+# Prepare extension modules based on cuda flag
+ext_modules = []
+cmdclass = {}
+
+if enable_cuda:
+    ext_modules.append(
+        CUDAExtension(
+            name="cuda_lo",
+            sources=["pylo/csrc/learned_optimizer.cu"],
+            extra_compile_args=extra_compile_args,
+        )
+    )
+    cmdclass["build_ext"] = BuildExtension
+
 setup(
     name="pylo",
     version="0.1.0",
@@ -47,12 +80,6 @@ setup(
         "Operating System :: OS Independent",
     ],
     python_requires=">=3.6",
-    ext_modules=[
-        CUDAExtension(
-            name="cuda_lo",
-            sources=["pylo/csrc/learned_optimizer.cu"],
-            extra_compile_args=extra_compile_args,
-        ),
-    ],
-    cmdclass={"build_ext": BuildExtension},
+    ext_modules=ext_modules,
+    cmdclass=cmdclass,
 )

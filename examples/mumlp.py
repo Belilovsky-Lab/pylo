@@ -13,29 +13,45 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 
-class MLP(nn.Module):
-    def __init__(self, width=128, num_classes=10, nonlin=F.relu, output_mult=1.0, input_mult=1.0):
-        super(MLP, self).__init__()
+class MuMLP(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        width=128,
+        num_classes=10,
+        nonlin=F.relu,
+        bias=True,
+        output_mult=1.0,
+        input_mult=1.0,
+        init_std=1.0,
+    ):
+        super(MuMLP, self).__init__()
         self.nonlin = nonlin
         self.input_mult = input_mult
         self.output_mult = output_mult
-        self.fc_1 = nn.Linear(3072, width, bias=False)
-        self.fc_2 = nn.Linear(width, width, bias=False)
-        self.fc_3 = MuReadout(width, num_classes, bias=False, output_mult=1.0)
+        self.init_std = init_std
+        self.fc_1 = nn.Linear(in_channels, width, bias=bias)
+        self.fc_2 = nn.Linear(width, width, bias=bias)
+        self.fc_3 = nn.Linear(width, width, bias=bias)
+        self.fc_4 = MuReadout(width, num_classes, bias=bias, output_mult=output_mult)
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.kaiming_normal_(self.fc_1.weight, a=1, mode='fan_in')
+        nn.init.kaiming_normal_(self.fc_1.weight, a=1, mode="fan_in")
         self.fc_1.weight.data /= self.input_mult**0.5
-        self.fc_1.weight.data *= 1.0
-        nn.init.kaiming_normal_(self.fc_2.weight, a=1, mode='fan_in')
-        self.fc_2.weight.data *= 1.0
-        nn.init.zeros_(self.fc_3.weight)
+        self.fc_1.weight.data *= self.init_std
+        nn.init.kaiming_normal_(self.fc_2.weight, a=1, mode="fan_in")
+        self.fc_2.weight.data *= self.init_std
+        nn.init.kaiming_normal_(self.fc_3.weight, a=1, mode="fan_in")
+        self.fc_3.weight.data *= self.init_std
+        nn.init.zeros_(self.fc_4.weight)
 
     def forward(self, x):
-        out = self.nonlin(self.fc_1(x) * self.input_mult**0.5)
+        out = self.nonlin(self.fc_1(x.flatten(1)) * self.input_mult**0.5)
         out = self.nonlin(self.fc_2(out))
-        return self.fc_3(out)
+        out = self.nonlin(self.fc_3(out))
+        return self.fc_4(out)
+
 
 def train(
     args,
@@ -126,11 +142,11 @@ def test(
 width = 128
 logs = [] 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-mynet = MLP(width=width).to(device)
+mynet = MuMLP(3072,width=width).to(device)
 class args(object):
     pass
 args.load_base_shapes = "examples/base-shapes/width64.bsh"
-args.lr = 0.01
+args.lr = 1
 args.momentum = 0.9
 args.data_dir = os.environ["DATA_PATH"]
 args.batch_size = 128

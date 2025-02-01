@@ -21,12 +21,13 @@ def get_model(num_classes=10, pretrained=True):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pretrained = False
 model = get_model(num_classes=10, pretrained=pretrained).to(device)
-set_base_shapes(model, "examples/base-shapes/resnet18.bsh")
-
+# set_base_shapes(model, "examples/base-shapes/resnet18.bsh")
+set_base_shapes(model,None)
 criterion = nn.CrossEntropyLoss()
 # optimizer = optim.Adam(model.parameters(), lr=0.001)
-# optimizer = optim.AdafacLO_naive(model.parameters())
-optimizer = optim.MuLO_naive(model.parameters(), lr=0.001)
+optimizer = optim.AdafacLO_CUDA(model.parameters())
+# optimizer = optim.MuLO_naive(model.parameters(), lr=1)
+# optimizer = optim.MuLO_CUDA(model.parameters(), lr=1)
 
 epochs = 30
 batch_size = 256
