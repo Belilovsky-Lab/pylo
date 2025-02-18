@@ -336,7 +336,7 @@ def _single_tensor_adafactor(
         # Scale by learning rate
         # update.mul_(lr)
         second_moment = torch.zeros([28], device="cuda")
-
+        # print(i,lr)
         cuda_lo.learned_optimizer_kernel(
             grad,
             param,

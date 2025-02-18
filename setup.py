@@ -31,6 +31,7 @@ extra_compile_args = {
         "-funroll-loops",  # Loop unrolling
         "-flto",  # Link-time optimization
         "-fomit-frame-pointer",  # Remove frame pointers
+        # "-std=c++17"
     ],
     "nvcc": [
         "-O3",  # Maximum CUDA optimization
@@ -41,6 +42,7 @@ extra_compile_args = {
         "--prec-div=false",  # Fast division
         "--prec-sqrt=false",  # Fast square root
         # "--maxrregcount=128",    # Limit registers for better occupancy
+        # "-Wl,-rpath,/usr/lib/x86_64-linux-gnu"
     ],
 }
 

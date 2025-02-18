@@ -4,6 +4,7 @@ from pylo.optim import AdafacLO_CUDA
 
 
 def MuLO_CUDA(params, impl=AdafacLO_CUDA, **kwargs):
+    # print("inside MuLO_CUDA")
     new_param_groups = []
     for param_group in process_param_groups(params, **kwargs):
         # For every existing param group, we split into several new groups
@@ -31,5 +32,6 @@ def MuLO_CUDA(params, impl=AdafacLO_CUDA, **kwargs):
         for width_mult, group in matrix_like_p.items():
             # Scale learning rate and weight decay accordingly
             group["lr"] /= width_mult
+            # print(group["lr"],group.keys())
         new_param_groups.extend(list(matrix_like_p.values()) + [vector_like_p])
     return impl(new_param_groups, **kwargs)
