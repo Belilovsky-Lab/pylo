@@ -25,7 +25,7 @@ pip install -e .
 
 
 ### Apply the following patch to the MuP repository
-"""
+```
 (base) btherien@therien-ws:~/github/mup$ git remote -v
 origin  https://github.com/microsoft/mup (fetch)
 origin  https://github.com/microsoft/mup (push)
@@ -44,7 +44,7 @@ index 518a33b..7d31820 100644
 
  class MuSharedReadout(MuReadout):
 (base) btherien@therien-ws:~/github/mup$
-"""
+```
 
 
 
