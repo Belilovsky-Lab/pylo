@@ -151,14 +151,14 @@ class AdafacLO_CUDA(Optimizer):
             param.requires_grad = False
 
         mom_decay = param_to_decay(
-            decay_to_param(torch.tensor(initial_momentum_decays))
+            decay_to_param(torch.tensor(initial_momentum_decays, device=self.device))
             + momentum_decays
         )
         rms_decays = param_to_decay(
-            decay_to_param(torch.tensor(initial_rms_decays)) + rms_decays
+            decay_to_param(torch.tensor(initial_rms_decays, device=self.device)) + rms_decays
         )
         adafactor_decays = param_to_decay(
-            decay_to_param(torch.tensor(initial_adafactor_decays)) + adafactor_decays
+            decay_to_param(torch.tensor(initial_adafactor_decays, device=self.device)) + adafactor_decays
         )
         clip_mom_decays = torch.clip(mom_decay.clone().detach(), 0.0, 1.0).to(
             self.device
