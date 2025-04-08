@@ -6,7 +6,7 @@ The following code is adapted from the following Jax implementation: https://git
 """
 from mup.optim import process_param_groups
 from collections import defaultdict
-from pylo.optim import AdafacLO_CUDA
+from pylo.optim.AdafacLO_cuda import AdafacLO_CUDA
 
 
 def MuLO_CUDA(params, impl=AdafacLO_CUDA, **kwargs):
