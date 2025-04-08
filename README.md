@@ -23,7 +23,7 @@ Cuda must be installed for the build to succeed. Users must set the `CUDA_HOME` 
 git clone https://github.com/Belilovsky-Lab/pylo
 cd pylo
 pip install .
-python setup.py install --cuda
+python setup.py install --cuda # or try pip install --no-build-isolation --config-settings="--build-option=--cuda" .
 ```
 
 #### Installation of MuP patch (After installing library)
