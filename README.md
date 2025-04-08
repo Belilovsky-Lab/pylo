@@ -22,6 +22,7 @@ Cuda must be installed for the build to succeed. Users must set the `CUDA_HOME` 
 ```bash
 git clone https://github.com/Belilovsky-Lab/pylo
 cd pylo
+pip install .
 python setup.py install --cuda
 ```
 
