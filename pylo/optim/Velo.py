@@ -1,3 +1,8 @@
+"""
+VeLO: An implementation of VeLO from https://arxiv.org/abs/2211.09760.
+
+Some of the following code is adapted from https://github.com/google/learned_optimization/blob/main/learned_optimization/research/general_lopt/hyper_v2.py
+"""
 import torch
 import torch.nn as nn
 import numpy as np

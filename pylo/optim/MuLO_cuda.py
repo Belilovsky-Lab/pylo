@@ -1,3 +1,9 @@
+"""MuLO_CUDA: An Cuda-accelerated MLP learned optimizer in μP.
+
+This is a PyTorch implementation of μLO from: https://arxiv.org/abs/2406.00153
+
+The following code is adapted from the following Jax implementation: https://github.com/bentherien/mu_learned_optimization/blob/main/src/mup_adafac_mlp_lopt.py
+"""
 from mup.optim import process_param_groups
 from collections import defaultdict
 from pylo.optim import AdafacLO_CUDA
@@ -5,9 +11,9 @@ from pylo.optim import AdafacLO_CUDA
 
 def MuLO_CUDA(params, impl=AdafacLO_CUDA, **kwargs):
     """
-    CUDA-accelerated MuP (Maximal Update Parameterization) wrapper for the Adafac learned optimizer.
+    CUDA-accelerated μP (Maximal Update Parameterization) wrapper for the Adafac learned optimizer.
     
-    This function applies the MuP parameterization to the CUDA version of the Adafac learned
+    This function applies the μP parameterization to the CUDA version of the Adafac learned
     optimizer, providing GPU acceleration for faster training. It organizes parameters into
     groups based on their infinite-width shape properties and scales learning rates according
     to width multipliers for matrix-like parameters.

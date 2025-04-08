@@ -125,7 +125,7 @@ class VeLORNN(nn.Module, PyTorchModelHubMixin,
                 - state (tuple): Updated LSTM state for next iteration
         """
         if self.mix_layers:
-            mix_1 = F.relu(self.mix_layer1(x))
+            # mix_1 = F.relu(self.mix_layer1(x)) #This line is skipped in the original implementation
             mix_2 = F.relu(self.mix_layer2(x))
             v, _ = torch.max(mix_2, dim=0, keepdim=True)
             x = self.final_mix_layer(x) + v

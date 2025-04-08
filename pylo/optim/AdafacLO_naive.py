@@ -1,11 +1,18 @@
+"""AdafacLO_Naive: An MLP learned optimizer.
+
+This is a PyTorch implementation of small_fc_lopt from: https://arxiv.org/abs/2203.11860
+
+The following code is adapted from the following Jax implementation: https://github.com/google/learned_optimization/blob/main/learned_optimization/learned_optimizers/adafac_mlp_lopt.py
+"""
+from collections import OrderedDict
 from typing import Optional
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from torch.optim import Optimizer
-import torch
 import torch.nn.functional as F
-from collections import OrderedDict
+from torch.optim import Optimizer
+
 from pylo.models.Meta_MLP import MetaMLP
 
 
@@ -123,7 +130,7 @@ class AdafacLO_naive(Optimizer):
         split_weights=False,
         clip_grad=False,
         mup_lrs=None,
-        hf_key: Optional[str] = "Pauljanson002/test",
+        hf_key: Optional[str] = "btherien/mulo",
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         momentum_decays = torch.tensor(momentum_decays).to(self.device)

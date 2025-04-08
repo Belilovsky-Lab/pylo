@@ -1,6 +1,8 @@
 """
 VeLO-MLP: An implementation based on Google's Versatile Learned Optimizer (VeLO) paper.
 
+Some of the following code is adapted from https://github.com/google/learned_optimization/blob/main/learned_optimization/research/general_lopt/hyper_v2.py
+
 This module implements the VeLO-MLP architecture, a neural network model that
 serves as a learned optimizer as described in the VeLO paper from Google Research.
 The model maintains two sets of parameters:

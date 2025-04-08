@@ -1,6 +1,8 @@
-""" AdafacLO: A learned optimizer based on Adafactor features.
-This optimizer is designed to work with the MetaMLP model for learned optimization.
+"""AdafacLO_CUDA: An Cuda-accelerated MLP learned optimizer.
 
+This is a PyTorch implementation of small_fc_lopt from: https://arxiv.org/abs/2203.11860
+
+The following code is adapted from the following Jax implementation: https://github.com/google/learned_optimization/blob/main/learned_optimization/learned_optimizers/adafac_mlp_lopt.py
 """
 
 from collections import OrderedDict
@@ -101,7 +103,7 @@ class AdafacLO_CUDA(Optimizer):
         load_from_file: Optional[str] = None,
         *,
         foreach: Optional[bool] = False,
-        hf_key: Optional[str] = "Pauljanson002/test",
+        hf_key: Optional[str] = "btherien/mulo",
     ):
         if isinstance(momentum_dtype, str):
             if momentum_dtype == "float16":

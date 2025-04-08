@@ -1,8 +1,3 @@
-"""
-"""
-
-
-
 # Standard library imports
 import argparse
 import math

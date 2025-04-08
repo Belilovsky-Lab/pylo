@@ -1,8 +1,7 @@
+"""This is a simple MLP example using PyTorch.
+
+The script is meant to replicate experiments from https://arxiv.org/abs/2406.00153, which were origninally run in Jax.
 """
-"""
-
-
-
 # Standard library imports
 import argparse
 import math
@@ -678,16 +677,16 @@ if __name__ == '__main__':
     args.epochs = 100
     args.log_interval = 1
     args.num_iters = 5000
-    args.width = 2048
+    args.width = 1024
     args.wandb_checkpoint_id = 'eb-lab/mup-meta-training/woz3g9l0'
     args.optimizer = 'mup_small_fc_mlp'
     args.num_trials = 5
-    args.image_size = 64
-    args.dataset_name = 'random'
+    args.image_size = 32
+    args.dataset_name = 'cifar10'
     args.log_norm = True
     args.use_wandb = True
     args.use_bf16 = False
-    args.num_classes = 1000
+    args.num_classes = 10
 
     IS = args.image_size
     args.group_name = f"mup_small_fc_mlp32_['mumlp-w{args.width}-d3_{args.dataset_name}-{IS}x{IS}x3']_m_mup_final_torch-cuda-fp32-act-paul-cuda"
