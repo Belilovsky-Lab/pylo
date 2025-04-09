@@ -1,5 +1,5 @@
 sphinx==7.1.2
 furo
--e ..
+-e .
 
 #sphinx-build -b html docs docs/build/html
