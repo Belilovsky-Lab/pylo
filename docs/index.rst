@@ -98,12 +98,12 @@ If you use PyLo in your research, please cite:
 
 .. code-block:: bibtex
 
-    @software{pylo2025,
-      author = {Paul Janson, Benjamin Therien, Xialong Huang, and Eugene Belilovsky},
-      title = {PyLo: A PyTorch Library for Learned Optimizers},
-      year = {2025},
-      url = {https://github.com/Belilovsky-Lab/pylo}
-    }
+   @software{pylo2025,
+   author = {Paul Janson, Benjamin Therien, Xialong Huang, Quentin Anthony and Eugene Belilovsky},
+   title = {PyLo: A PyTorch Library for Learned Optimizers},
+   year = {2025},
+   url = {https://github.com/Belilovsky-Lab/pylo}
+   }
 
 .. Indices and tables
 .. ==================
