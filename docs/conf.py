@@ -7,8 +7,14 @@ import os
 import sys
 from datetime import datetime
 
-# Add the project root directory to the path so that autodoc can find the modules
-sys.path.insert(0, os.path.abspath(".."))
+from pathlib import Path
+
+# Determine the directory containing conf.py
+docs_dir = Path(__file__).parent.absolute()
+project_root = docs_dir.parent
+
+# Add project root to the path in a way that works in both environments
+sys.path.insert(0, str(project_root))
 
 # -- Project information -----------------------------------------------------
 project = "pylo"
