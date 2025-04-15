@@ -169,7 +169,6 @@ class BufferLossAccumulators:
         return torch.where(state["iteration"] <= 2, feature1 * 0, feature1)
 
 
-
 def lstm_features_for_tensor(p, g, m, rms, fraction_trained, loss_features, device):
 
     norm_mult = torch.rsqrt(torch.clamp(torch.mean(p**2), min=1e-9))
@@ -339,6 +338,34 @@ class VeLO(Optimizer):
         )
         return control_params, lr_mult
 
+        # Add this method to save the loss buffer and LSTM hidden state
+
+    def state_dict(self):
+        # First get the standard optimizer state_dict
+        state_dict = super(VeLO, self).state_dict()
+
+        # Add our additional state information
+        state_dict["loss_buffer"] = self.loss_buffer
+        state_dict["lstm_hidden_state"] = self.lstm_hidden_state
+        state_dict["num_steps"] = self.num_steps
+
+        return state_dict
+
+    # Add this method to load the loss buffer and LSTM hidden state
+    def load_state_dict(self, state_dict):
+        # Extract our custom state information
+        loss_buffer = state_dict.pop("loss_buffer")
+        lstm_hidden_state = state_dict.pop("lstm_hidden_state")
+        num_steps = state_dict.pop("num_steps")
+
+        # Load the standard optimizer state
+        super(VeLO, self).load_state_dict(state_dict)
+
+        # Restore our custom state
+        self.loss_buffer = loss_buffer
+        self.lstm_hidden_state = lstm_hidden_state
+        self.num_steps = num_steps
+
     @torch.no_grad()
     def step(self, loss):
         self.loss_buffer = self.buffer_loss_fns.update(self.loss_buffer, loss)
@@ -457,4 +484,3 @@ class VeLO(Optimizer):
                 p.add_(step, alpha=-group["lr"])
 
         return
-
