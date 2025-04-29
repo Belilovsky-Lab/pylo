@@ -1,7 +1,6 @@
 """
-VeLO: An implementation of VeLO from https://arxiv.org/abs/2211.09760.
-
-Some of the following code is adapted from https://github.com/google/learned_optimization/blob/main/learned_optimization/research/general_lopt/hyper_v2.py
+PyTorch implementation of Celo learned optimizer:
+https://arxiv.org/abs/2501.12670
 """
 
 from collections import OrderedDict
