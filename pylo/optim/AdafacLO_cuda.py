@@ -398,6 +398,8 @@ def _single_tensor_adafactor(
             dr,
             vector_like,
         )
+        if weight_decay > 0:
+            param.add_(param, alpha=-weight_decay * lr)
 
 
 def _multi_tensor_adafactor(
