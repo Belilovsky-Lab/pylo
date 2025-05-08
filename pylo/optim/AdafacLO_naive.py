@@ -129,6 +129,7 @@ class AdafacLO_naive(Optimizer):
         make_separate_weights=False,
         split_weights=False,
         clip_grad=False,
+        weight_decay=0.0,
         mup_lrs=None,
         hf_key: Optional[str] = "btherien/mulo",
     ):
@@ -165,6 +166,7 @@ class AdafacLO_naive(Optimizer):
             make_separate_weights=make_separate_weights,
             split_weights=split_weights,
             clip_grad=clip_grad,
+            weight_decay=weight_decay,
             mup_lrs=mup_lrs,
             max_grad_norm=max_grad_norm,
         )
@@ -181,6 +183,7 @@ class AdafacLO_naive(Optimizer):
             exp_mult = group["exp_mult"]
             step_mult = group["step_mult"]
             max_grad_norm = group["max_grad_norm"]
+            weight_decay = group["weight_decay"]
             if "step" in group:
                 group["step"] += 1
             else:
@@ -296,4 +299,6 @@ class AdafacLO_naive(Optimizer):
                     direction * torch.exp(magnitude * exp_mult) * step_mult
                 ).squeeze(-1)
                 p.add_(step, alpha=-group["lr"])
+                if weight_decay > 0:
+                    p.add_(p, alpha=-weight_decay * group["lr"])
         return
