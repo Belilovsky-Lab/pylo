@@ -223,6 +223,7 @@ class VeLO(Optimizer):
         concat_weights=True,
         make_separate_weights=False,
         split_weights=False,
+        weight_decay=0.0,
         clip_grad=False,
         mup_lrs=None,
         hf_key_rnn="Pauljanson002/VeLO_RNN",
@@ -262,6 +263,7 @@ class VeLO(Optimizer):
             split_weights=split_weights,
             clip_grad=clip_grad,
             mup_lrs=mup_lrs,
+            weight_decay=weight_decay,
         )
         super(VeLO, self).__init__(params, defaults)
 
@@ -380,6 +382,7 @@ class VeLO(Optimizer):
                 beta_m = group["initial_momentum_decays"]
                 beta_rms = group["initial_rms_decays"]
                 beta_adafactor = group["initial_adafactor_decays"]
+                weight_decay = group["weight_decay"]
                 p_shape = p.shape
 
                 if p.grad is None:
@@ -482,5 +485,6 @@ class VeLO(Optimizer):
                 ).squeeze(-1)
                 step = lr_mult[-(1 + layer_idx)] * step
                 p.add_(step, alpha=-group["lr"])
-
+                if weight_decay > 0:
+                    p.add_(p, alpha=-weight_decay * group["lr"])
         return
