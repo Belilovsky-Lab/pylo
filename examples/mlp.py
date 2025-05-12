@@ -277,7 +277,94 @@ class MLP(nn.Module):
         
         return out, activations
 
-
+class SimpleCNN(nn.Module):
+    def __init__(self, num_classes=10, log_activations=True):
+        super(SimpleCNN, self).__init__()
+        self.log_activations = log_activations
+        
+        # First convolutional layer with stride=2
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=2, padding=1)
+        
+        # Second convolutional layer with stride=1
+        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1)
+        
+        # Max pooling layer
+        self.pool = nn.MaxPool2d(kernel_size=16, stride=16)
+        
+        # Calculate the size of features after convolutions and pooling
+        # For a 32x32 input image:
+        # After conv1 (stride=2): 16x16
+        # After conv2 (stride=1): 16x16
+        # After pooling: 8x8
+        self.fc_input_size = 32
+        
+        # Fully connected layer
+        self.fc = nn.Linear(self.fc_input_size, num_classes)
+        
+        # Initialize parameters
+        self.reset_parameters()
+    
+    def reset_parameters(self):
+        # Initialize conv layers
+        ini = VarianceScaling(scale=1.0, mode='fan_in', distribution='truncated_normal')
+        ini.initialize(self.conv1.weight)
+        ini.initialize(self.conv2.weight)
+        
+        # Initialize bias terms to zero
+        nn.init.zeros_(self.conv1.bias)
+        nn.init.zeros_(self.conv2.bias)
+        
+        # Initialize fully connected layer
+        ini.initialize(self.fc.weight)
+        nn.init.zeros_(self.fc.bias)
+    
+    def forward(self, x):
+        activations = {}  # Dictionary to store activation logs
+        
+        # First conv layer
+        x = self.conv1(x)
+        if self.log_activations:
+            with torch.no_grad():
+                activations["conv1_pre-act_l1"] = torch.mean(torch.abs(x)).item()
+                activations["conv1_pre-act"] = x.clone().detach()
+        
+        x = F.relu(x)
+        if self.log_activations:
+            with torch.no_grad():
+                activations["conv1_act_l1"] = torch.mean(torch.abs(x)).item()
+                activations["conv1_act"] = x.clone().detach()
+        
+        # Second conv layer
+        x = self.conv2(x)
+        if self.log_activations:
+            with torch.no_grad():
+                activations["conv2_pre-act_l1"] = torch.mean(torch.abs(x)).item()
+                activations["conv2_pre-act"] = x.clone().detach()
+        
+        x = F.relu(x)
+        if self.log_activations:
+            with torch.no_grad():
+                activations["conv2_act_l1"] = torch.mean(torch.abs(x)).item()
+                activations["conv2_act"] = x.clone().detach()
+        
+        # Max pooling
+        x = self.pool(x)
+        if self.log_activations:
+            with torch.no_grad():
+                activations["pool_out_l1"] = torch.mean(torch.abs(x)).item()
+                activations["pool_out"] = x.clone().detach()
+        
+        # Flatten
+        x = x.view(x.size(0), -1)
+        
+        # Fully connected layer
+        x = self.fc(x)
+        if self.log_activations:
+            with torch.no_grad():
+                activations["fc_out_l1"] = torch.mean(torch.abs(x)).item()
+                activations["fc_out"] = x.clone().detach()
+        
+        return x, activations
 
 def _cached_tfds_load(datasetname, split, batch_size):
     assert batch_size == -1
@@ -532,7 +619,7 @@ def get_dataset(args):
         train_loader = torch.utils.data.DataLoader(
             trainset, 
             sampler=random_sampler, 
-            batch_size=args.batch_size,
+            batch_size=args.per_device_batch_size,
             shuffle=not args.no_shuffle, 
             drop_last=True,
             num_workers=8,
@@ -542,7 +629,7 @@ def get_dataset(args):
         )
         test_loader = torch.utils.data.DataLoader(
             trainset, 
-            batch_size=4096, 
+            batch_size=1024, 
             shuffle=False, 
             drop_last=True,
             num_workers=8,
@@ -571,7 +658,7 @@ def get_dataset(args):
             num_samples=args.num_iters * 4096 * args.num_trials
         )
         train_loader = torch.utils.data.DataLoader(trainset, 
-                                                   batch_size=args.batch_size,
+                                                   batch_size=args.per_device_batch_size,
                                                    sampler=random_sampler, 
                                                    prefetch_factor=10,
                                                     shuffle=not args.no_shuffle, 
@@ -579,8 +666,11 @@ def get_dataset(args):
                                                     pin_memory=True)
 
         testset = datasets.CIFAR10(root=args.data_dir, train=False, 
-                                            download=True, transform=transform)
-        test_loader = torch.utils.data.DataLoader(testset, batch_size=args.batch_size,
+                       download=True, transform=transforms.Compose([
+                           transforms.ToTensor(),
+                        transforms.Normalize(mean=mean_cifar10, std=std_cifar10)
+                       ]))
+        test_loader = torch.utils.data.DataLoader(testset, batch_size=args.per_device_batch_size,
                                                 shuffle=False, num_workers=2)    
     elif args.dataset_name == 'random':
         
@@ -631,7 +721,10 @@ def test(
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            output = model(data.view(data.size(0), -1))
+            if args.model_type != "cnn":
+                output,activations = model(data.view(data.size(0), -1))
+            else:
+                output, activations = model(data) 
             test_loss += criterion(
                 output, target, reduction="sum"
             ).item()  # sum up batch loss
@@ -656,8 +749,10 @@ if __name__ == '__main__':
 
     args.lr = 1
     args.momentum = 0.9
-    args.data_dir = os.environ["DATA_PATH"]
+    args.data_dir = os.environ.get('DATA_DIR', os.environ.get('HOME') + '/data')
     args.batch_size = 4096
+    args.per_device_batch_size = 4096
+
     args.no_shuffle = True
     args.epochs = 100
     args.log_interval = 1
@@ -665,18 +760,18 @@ if __name__ == '__main__':
     args.width = 128
     args.wandb_checkpoint_id = 'eb-lab/mup-meta-training/woz3g9l0'
     args.optimizer = 'mup_small_fc_mlp'
-    args.num_trials = 3
-    args.image_size = 64
-    args.dataset_name = 'imagenet'
-    args.log_norm = True
+    args.num_trials = 1
+    args.image_size = 32
+    args.dataset_name = 'cifar10'
+    args.log_norm = False
     args.use_wandb = True
     args.use_bf16 = False
-    args.num_classes = 1000
+    args.num_classes = 10
 
     IS = args.image_size
-    args.group_name = f"standard_fc_mlp32_['mlp-w{args.width}-d3_{args.dataset_name}-{IS}x{IS}x3']_velo_torch_imagenet"
-
-
+    args.group_name = f"standard_cnn_mlp32_['cnn-w{args.width}-d3_{args.dataset_name}-{IS}x{IS}x3']_velo_valid_cnn"
+    args.model_type="cnn"
+    args.validation_per_step = 100
 
 
 
@@ -716,7 +811,9 @@ if __name__ == '__main__':
 
 
 
-    
+    gas = args.batch_size // args.per_device_batch_size
+    args.num_iters = args.num_iters * gas
+    print("Adjusted num iters due to gradient accumulation",args.num_iters)
 
     for _ in range(args.num_trials):
 
@@ -729,16 +826,17 @@ if __name__ == '__main__':
                         )
 
         input_width = args.image_size * args.image_size * 3
-        model = MLP(input_width, width=args.width, num_classes=args.num_classes).to(device)
+        if args.model_type == 'cnn':
+            model = SimpleCNN(num_classes=args.num_classes,log_activations=False).to(device)
+        else:
+            model = MLP(input_width, width=args.width, num_classes=args.num_classes).to(device)
 
         #set seed before re-init parameters
         set_torch_seed()
         model.reset_parameters()
-        
         # Compile the model
         # if torch.cuda.is_available():
         #     model = torch.compile(model)
-
 
         # optimizer = MuSGD(model.parameters(), lr=args.lr, momentum=args.momentum)
         #optimizer = MuLO_naive(model.parameters(), lr=args.lr)
@@ -759,6 +857,7 @@ if __name__ == '__main__':
             ascii=True,
             desc="Inner Loop",
         )
+        optimizer.zero_grad()
         for batch_idx in pbar:
             data, target = next(train_loader)
             if torch.cuda.is_available() and args.use_bf16:
@@ -775,11 +874,16 @@ if __name__ == '__main__':
 
             data, target = data.to(device), target.to(device)
             # Flatten data once
-            data_flattened = data.view(data.size(0), -1)
-            optimizer.zero_grad()
-            output, activations = model(data_flattened)
+            if args.model_type != 'cnn':
+                data_flattened = data.view(data.size(0), -1)
+                output, activations = model(data_flattened)
+            else:
+                output, activations = model(data) 
+                
             loss = F.cross_entropy(output, target)
-            loss.backward()
+            (loss / gas).backward()
+            
+            
 
             # Combine operations to reduce memory access
             with torch.no_grad():
@@ -792,7 +896,6 @@ if __name__ == '__main__':
                 "train_acc": accuracy,
             }
 
-            
             if args.use_bf16:
                 #cast to FP32 so kernel works
                 model = model.to(torch.float32)
@@ -802,27 +905,48 @@ if __name__ == '__main__':
                     for n,p in model.named_parameters():
                         temp[f"{n}_norm"] = torch.norm(p).item()
 
-            if isinstance(optimizer, VeLO):
-                optimizer.step(loss)
-            else:
-                optimizer.step()
+            if (batch_idx + 1) % gas == 0 or (batch_idx + 1) == args.num_iters:
+                if isinstance(optimizer, VeLO):
+                    
+                                    
+                    total_norm = 0
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2).item()
+                            total_norm += param_norm ** 2
+                    total_norm = total_norm ** 0.5
+                    temp["grad_norm"] = total_norm
+                    wandb.log(temp)
 
-            # test interval
-            # if batch_idx % 50 == 0:
-            #     test_loss, test_acc = test(args, model, device, test_loader)
-            #     model.train()
-
-            #     temp.update(
-            #         {"test_loss":test_loss,
-            #         "test_acc":test_acc}
-            #     )
+                    optimizer.step(loss)
+                    optimizer.zero_grad()
+                else:
+                    optimizer.step()
+                    optimizer.zero_grad()
+            
+            # Run validation at specified intervals
+            if batch_idx % (args.validation_per_step * gas) == 0:
+                # Switch model to evaluation mode
+                model.eval()
+                # Use the test function to get validation metrics
+                val_loss, val_acc = test(args, model, device, test_loader, evalmode=False)
+                # Switch back to training mode
+                model.train()
+                
+                # Add validation metrics to the logs
+                temp.update({
+                    "val_loss": val_loss,
+                    "val_acc": val_acc
+                })
+                
+                # Print validation results
+                print(f"Validation at step {batch_idx}: Loss: {val_loss:.4f}, Accuracy: {val_acc:.4f}")
+                wandb.log({
+                    "test loss": val_loss,
+                    "test_acc": val_acc
+                })
 
             pbar.set_postfix(temp)
-            
-
-            if args.use_wandb:
-                temp.update(activations)
-                run.log(temp)
 
         if args.use_wandb:
             wandb.finish()

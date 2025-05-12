@@ -52,8 +52,8 @@ def update_factors(
         reduced_d1 = d1 - 1 if d1 > d0 else d1
         row_col_mean = torch.mean(new_v_row, dim=reduced_d1, keepdim=True)
 
-        row_factor = torch.rsqrt(new_v_row / (row_col_mean + 1e-9))
-        col_factor = torch.rsqrt(new_v_col)
+        row_factor = safe_rsqrt(new_v_row / (row_col_mean + 1e-9))
+        col_factor = safe_rsqrt(new_v_col)
         y = g * row_factor.unsqueeze(d0) * col_factor.unsqueeze(d1)
         return new_v_col, new_v_row, torch.tensor([], dtype=torch.float32), y
 
