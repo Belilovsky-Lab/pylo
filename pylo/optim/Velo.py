@@ -59,7 +59,7 @@ def update_factors(
 
     else:
         new_v = decay_rate * v_full + mixing_rate * grad_sqr
-        y = g * torch.rsqrt(new_v + 1e-9)
+        y = g * safe_rsqrt(new_v + 1e-9)
         return (
             torch.tensor([], dtype=torch.float32),
             torch.tensor([], dtype=torch.float32),
