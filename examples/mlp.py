@@ -30,6 +30,8 @@ import numpy as np
 import os
 import time
 
+DATA_PATH='your h5 path here'
+
 def set_torch_seed(seed = None, deterministic: bool = False):
     """
     Set all relevant seeds for PyTorch to ensure reproducibility.
@@ -599,7 +601,7 @@ class CNumpyImageDataset(Dataset):
 def get_dataset(args):
 
     if args.dataset_name == 'imagenet':
-        H5Data(h5_path=f'/home/mila/p/paul.janson/data/imagenet_{args.image_size}x{args.image_size}x3_JPEG.h5')
+        H5Data(h5_path=DATA_PATH)
 
         normalize_mean=(0.485, 0.456, 0.406)
         normalize_std=(0.229, 0.224, 0.225)
@@ -758,7 +760,7 @@ if __name__ == '__main__':
     args.log_interval = 1
     args.num_iters = 5000
     args.width = 128
-    args.wandb_checkpoint_id = 'eb-lab/mup-meta-training/woz3g9l0'
+    args.wandb_checkpoint_id = '/mup-meta-training/woz3g9l0'
     args.optimizer = 'mup_small_fc_mlp'
     args.num_trials = 1
     args.image_size = 32

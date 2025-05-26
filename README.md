@@ -69,13 +69,6 @@ from pylo import MetaMLP
 meta_model = MetaMLP.from_pretrained("username/model-name")
 ```
 
-## Documentation
-
-For detailed documentation and examples, visit [our documentation site](https://pylo.readthedocs.io).
-
-## Contributing
-
-We welcome contributions to PyLO! Please see our [contributing guide](CONTRIBUTING.md) for more information.
 
 ## Citation
 

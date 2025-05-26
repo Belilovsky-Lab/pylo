@@ -18,7 +18,7 @@ class MetaMLP(
     from the Hugging Face Hub.
     """
 
-    def __init__(self, input_size, hidden_size, hidden_layers):
+    def __init__(self, input_size=39, hidden_size=32, hidden_layers=1):
         """Initialize the MetaMLP model.
 
         Args:
