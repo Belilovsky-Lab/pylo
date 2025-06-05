@@ -86,7 +86,13 @@ def factored_dims(shape):
     if len(shape) < 2:
         return None
     sorted_dims = np.argsort(shape)
-    return int(sorted_dims[-2]), int(sorted_dims[-1])
+    if shape[int(sorted_dims[-2])] == shape[int(sorted_dims[-1])]:
+        if len(shape) == 4 and int(sorted_dims[-2]) == 0 and int(sorted_dims[-1]) == 1:
+            return int(sorted_dims[-2]), int(sorted_dims[-1])
+        else:
+            return int(sorted_dims[-1]), int(sorted_dims[-2])
+    else:
+        return int(sorted_dims[-2]), int(sorted_dims[-1])
 
 
 def decay_to_param(x):
