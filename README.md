@@ -92,4 +92,4 @@ If you use PyLO in your research, please consider citing our work:
 
 ## License
 
-PyLO is released under the [Apache 2.0 License](LICENSE).
+PyLO is released under the [BSD License](LICENSE).
