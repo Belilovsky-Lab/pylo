@@ -142,10 +142,10 @@ class AdafacLO_CUDA(Optimizer):
 
         if load_from_file:
             loaded_params = torch.load(load_from_file)
-            self.metamlp.load_state_dict(loaded_params['state_dict'])
-            momentum_decays = loaded_params['decays']['momentum_decays']
-            rms_decays = loaded_params['decays']['rms_decays']
-            adafactor_decays = loaded_params['decays']['adafactor_decays']
+            self.metamlp.load_state_dict(loaded_params["state_dict"])
+            momentum_decays = loaded_params["decays"]["momentum_decays"]
+            rms_decays = loaded_params["decays"]["rms_decays"]
+            adafactor_decays = loaded_params["decays"]["adafactor_decays"]
 
         for name, param in self.metamlp.named_parameters():
             param.requires_grad = False
@@ -155,10 +155,12 @@ class AdafacLO_CUDA(Optimizer):
             + momentum_decays
         )
         rms_decays = param_to_decay(
-            decay_to_param(torch.tensor(initial_rms_decays, device=self.device)) + rms_decays
+            decay_to_param(torch.tensor(initial_rms_decays, device=self.device))
+            + rms_decays
         )
         adafactor_decays = param_to_decay(
-            decay_to_param(torch.tensor(initial_adafactor_decays, device=self.device)) + adafactor_decays
+            decay_to_param(torch.tensor(initial_adafactor_decays, device=self.device))
+            + adafactor_decays
         )
         clip_mom_decays = torch.clip(mom_decay.clone().detach(), 0.0, 1.0).to(
             self.device
@@ -197,7 +199,7 @@ class AdafacLO_CUDA(Optimizer):
 
     @torch.no_grad()
     def step(self, loss=None):
-        
+
         for group in self.param_groups:
             params_with_grad = []
             grads = []
@@ -251,9 +253,7 @@ class AdafacLO_CUDA(Optimizer):
                             p.grad, memory_format=torch.preserve_format
                         )
 
-                    state["exp_avg"] = p.grad.new_zeros(
-                        (3,) + p.grad.shape, dtype=self.defaults["momentum_dtype"]
-                    )
+                    state["exp_avg"] = p.grad.new_zeros((3,) + p.grad.shape)
 
                 state_steps.append(state["step"])
                 exp_avg_sq_rs.append(state.get("exp_avg_sq_r", None))
@@ -332,13 +332,13 @@ def _single_tensor_adafactor(
             dc, dr = inter_dr_dc
             exp_avg_sq_r.lerp_(
                 grad_sqr.mean(dim=dr, keepdim=True)[None, ...],
-                1 - self.beta_adafactor.view(-1, *[1] * grad.dim()),
+                1 - self.beta_adafactor.view(-1, *[1] * grad.dim()).to(grad_sqr.dtype),
             )
             exp_avg_sq_c.lerp_(
                 grad_sqr.mean(dim=dc, keepdim=True)[None, ...],
-                1 - self.beta_adafactor.view(-1, *[1] * grad.dim()),
+                1 - self.beta_adafactor.view(-1, *[1] * grad.dim()).to(grad_sqr.dtype),
             )
-            exp_avg_sq.lerp_(grad_sqr, one_minus_beta2_t)
+            exp_avg_sq.lerp_(grad_sqr, one_minus_beta2_t.to(grad_sqr.dtype))
             reduce_dc = dc - 1 if dc > dr else dc
             row_col_mean = exp_avg_sq_r.mean(dim=reduce_dc, keepdim=True)
             row_factor = safe_rsqrt(exp_avg_sq_r / (row_col_mean + 1e-9))
@@ -346,16 +346,22 @@ def _single_tensor_adafactor(
             vector_like = 0
         else:
             dc = dr = 0
-            exp_avg_sq_r.lerp_(grad_sqr[None, ...], 1 - self.beta_adafactor.view(-1, 1))
-            exp_avg_sq_c.lerp_(grad_sqr[None, ...], 1 - self.beta_adafactor.view(-1, 1))
-            exp_avg_sq.lerp_(grad_sqr, one_minus_beta2_t)
+            exp_avg_sq_r.lerp_(
+                grad_sqr[None, ...],
+                1 - self.beta_adafactor.view(-1, 1).to(grad_sqr.dtype),
+            )
+            exp_avg_sq_c.lerp_(
+                grad_sqr[None, ...],
+                1 - self.beta_adafactor.view(-1, 1).to(grad_sqr.dtype),
+            )
+            exp_avg_sq.lerp_(grad_sqr, one_minus_beta2_t.to(grad_sqr.dtype))
             row_factor = safe_rsqrt(exp_avg_sq_r + 1e-9)
             col_factor = torch.ones_like(row_factor)
             vector_like = 1
 
         # Apply momentum (in different dtype)
 
-        if momentum_dtype != grad.dtype:
+        if False:
             exp_avg.lerp_(
                 grad.to(momentum_dtype)[None, ...],
                 1 - self.beta_m.to(momentum_dtype).view([-1] + [1] * grad.dim()),
@@ -363,36 +369,35 @@ def _single_tensor_adafactor(
         else:
             exp_avg.lerp_(
                 grad[None, ...],
-                1 - self.beta_m.view([-1] + [1] * grad.dim()),
+                1 - self.beta_m.view([-1] + [1] * grad.dim()).to(grad.dtype),
             )  # ema
 
         # Scale by learning rate
         # update.mul_(lr)
-        
-        
+
         second_moment = torch.zeros([28], device="cuda")
 
         cuda_lo.learned_optimizer_kernel(
             grad,
             param,
-            exp_avg.to(grad.dtype),
+            exp_avg,
             exp_avg_sq,
             exp_avg_sq_r,
             exp_avg_sq_c,
             row_factor,
             col_factor,
             second_moment,
-            self.metamlp.network.input.weight,
-            self.metamlp.network.input.bias,
-            self.metamlp.network.linear_0.weight,
-            self.metamlp.network.linear_0.bias,
-            self.metamlp.network.output.weight,
-            self.metamlp.network.output.bias,
+            self.metamlp.network.input.weight.to(grad.dtype),
+            self.metamlp.network.input.bias.to(grad.dtype),
+            self.metamlp.network.linear_0.weight.to(grad.dtype),
+            self.metamlp.network.linear_0.bias.to(grad.dtype),
+            self.metamlp.network.output.weight.to(grad.dtype),
+            self.metamlp.network.output.bias.to(grad.dtype),
             lr,
             step_mult,
             exp_mult,
             1e-6,
-            step_t-1,
+            step_t - 1,
             0.0,
             dc,
             dr,

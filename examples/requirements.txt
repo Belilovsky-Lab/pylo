@@ -1,4 +1,0 @@
-wandb
-h5py
-tensorflow_datasets
-tensorflow
