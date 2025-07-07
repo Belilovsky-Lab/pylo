@@ -69,6 +69,10 @@ from pylo import MetaMLP
 meta_model = MetaMLP.from_pretrained("username/model-name")
 ```
 
+## Examples
+
+Examples of using Pylo for language modeling and image classification are available here [pylo_examples](https://github.com/Belilovsky-Lab/pylo_examples).
+
 ## Documentation
 
 For detailed documentation and examples, visit [our documentation site](https://pylo.readthedocs.io).
@@ -76,6 +80,7 @@ For detailed documentation and examples, visit [our documentation site](https://
 ## Contributing
 
 We welcome contributions to PyLO! Please see our [contributing guide](CONTRIBUTING.md) for more information.
+
 
 ## Citation
 
