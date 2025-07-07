@@ -89,7 +89,7 @@ If you use PyLO in your research, please consider citing our work:
 ```bibtex
 @software{pylo2025,
   author = {Paul Janson, Benjamin Therien, Quentin Anthony, Xialong Huang, Abhinav Moudgil and Eugene Belilovsky},
-  title = {PyLo: A PyTorch Library for Learned Optimizers},
+  title = {PyLO: Towards Accessible Learned Optimizers in Pytorch},
   year = {2025},
   url = {https://github.com/Belilovsky-Lab/pylo}
 }
