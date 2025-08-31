@@ -61,6 +61,13 @@ if enable_cuda:
             extra_compile_args=extra_compile_args,
         )
     )
+    ext_modules.append(
+        CUDAExtension(
+            name="velo_cuda_kernel",
+            sources=["pylo/csrc/velo_kernel.cu"],
+            extra_compile_args=extra_compile_args,
+        )
+    )
     cmdclass["build_ext"] = BuildExtension
 
 setup(
