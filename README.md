@@ -100,4 +100,5 @@ If you use PyLO in your research, please consider citing our work:
 
 PyLO is released under the [BSD License](LICENSE).
 
+```html
 <meta name="google-site-verification" content="el4fG1KKpuLRRxbZz6wYWDFKKuHnH2DunUk36yKFviw" />
