@@ -235,6 +235,7 @@ class VeLO_CUDA(Optimizer):
         mup_lrs=None,
         hf_key_rnn="Pauljanson002/VeLO_RNN",
         hf_key_mlp="Pauljanson002/VeLO_MLP",
+        legacy=True,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         momentum_decays = torch.tensor(momentum_decays).to(self.device)
@@ -271,9 +272,11 @@ class VeLO_CUDA(Optimizer):
             clip_grad=clip_grad,
             mup_lrs=mup_lrs,
             weight_decay=weight_decay,
+            legacy=legacy,
         )
         super(VeLO_CUDA, self).__init__(params, defaults)
 
+        self.legacy = legacy
         self.buffer_loss_fns = BufferLossAccumulators(self.device)
         self.loss_buffer = self.buffer_loss_fns.init(num_steps)
         self.num_steps = num_steps
@@ -286,6 +289,11 @@ class VeLO_CUDA(Optimizer):
             param.requires_grad = False
         for name, param in self.rnn.named_parameters():
             param.requires_grad = False
+
+        # Initialize second moment buffer for CUDA kernel
+        if not self.legacy:
+            self.second_moment = torch.zeros(30, dtype=torch.float32, device=self.device)
+
         self.init_state()
 
     @torch.no_grad()
@@ -375,11 +383,65 @@ class VeLO_CUDA(Optimizer):
         self.lstm_hidden_state = lstm_hidden_state
         self.num_steps = num_steps
 
+    def _prepare_kernel_tensors(self, p, state, control_params, layer_idx):
+        """Prepare tensors for CUDA kernel call."""
+        p_shape = p.shape
+        f_dims = factored_dims(p_shape)
+
+        # Get MLP weights from control_params
+        self.network_stack.update_params(control_params[-(1 + layer_idx)])
+
+        # Extract MLP weights and biases
+        mlp_params = dict(self.network_stack.named_parameters())
+        input_weights = mlp_params["input_weights"].data
+        input_bias = mlp_params["input_bias"].data
+        hidden_weights = mlp_params["hidden_weights.0"].data
+        hidden_bias = mlp_params["hidden_bias.0"].data
+        output_weights = mlp_params["output_weights"].data
+        output_bias = mlp_params["output_bias"].data
+
+        # Prepare factored tensors
+        if f_dims is not None:
+            fac_row = state["fac_vec_row"]
+            fac_col = state["fac_vec_col"]
+            fac_v = torch.empty(0, device=self.device, dtype=p.dtype)
+            is_factored = True
+            d1, d0 = f_dims
+        else:
+            fac_row = torch.empty(0, device=self.device, dtype=p.dtype)
+            fac_col = torch.empty(0, device=self.device, dtype=p.dtype)
+            fac_v = state["fac_vec_v"]
+            is_factored = False  
+            d0, d1 = 0, 1  # Default values
+
+        return {
+            'fac_row': fac_row,
+            'fac_col': fac_col,
+            'fac_v': fac_v,
+            'input_weights': input_weights,
+            'input_bias': input_bias,
+            'hidden_weights': hidden_weights,
+            'hidden_bias': hidden_bias,
+            'output_weights': output_weights,
+            'output_bias': output_bias,
+            'is_factored': is_factored,
+            'dc': d0 if f_dims else 0,
+            'dr': d1 if f_dims else 1
+        }
+
     @torch.no_grad()
     def step(self, loss):
         self.loss_buffer = self.buffer_loss_fns.update(self.loss_buffer, loss)
         to_lstm_from_loss = self.buffer_loss_fns.features(self.loss_buffer)
         control_params, lr_mult = self.collect_rnn_outputs(to_lstm_from_loss)
+
+        if self.legacy:
+            return self._step_legacy(control_params, lr_mult)
+        else:
+            return self._step_kernel(control_params, lr_mult)
+
+    def _step_legacy(self, control_params, lr_mult):
+        """Original Python-based implementation."""
         for group in self.param_groups:
             exp_mult = group["exp_mult"]
             step_mult = group["step_mult"]
@@ -484,8 +546,6 @@ class VeLO_CUDA(Optimizer):
                 inps = torch.cat(inps, dim=-1)
                 self.network_stack.update_params(control_params[-(1 + layer_idx)])
                 direction, magnitude, _ = self.network_stack(inps).split(1, dim=-1)
-                # print(direction.shape, magnitude.shape, _.shape)
-                # print(direction, magnitude, _)
                 param_scale = torch.sqrt(torch.mean(p**2) + 1e-9)
                 step = param_scale * (
                     direction * torch.exp(magnitude * exp_mult) * step_mult
@@ -494,7 +554,93 @@ class VeLO_CUDA(Optimizer):
                 p.add_(step, alpha=-group["lr"])
                 if weight_decay > 0:
                     p.add_(p, alpha=-weight_decay * group["lr"])
+        return
 
-                # Call the CUDA kernel
-                velo_cuda_kernel.velo_kernel(p)
+    def _step_kernel(self, control_params, lr_mult):
+        """CUDA kernel-based implementation."""
+        # Reset second moment accumulator
+        self.second_moment.zero_()
+
+        for group in self.param_groups:
+            exp_mult = group["exp_mult"]
+            step_mult = group["step_mult"]
+            group["step"] += 1
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                beta_m = group["initial_momentum_decays"]
+                beta_rms = group["initial_rms_decays"]
+                beta_adafactor = group["initial_adafactor_decays"]
+                weight_decay = group["weight_decay"]
+                p_shape = p.shape
+
+                grad = torch.clip(p.grad, -1000.0, 1000.0)
+                state = self.state[p]
+                mom = state["mom"]
+                rms = state["rms"]
+                layer_idx = state["layer_idx"]
+
+                # Update momentum and RMS buffers (still done in Python)
+                batch_p = p.unsqueeze(-1)
+                batch_g = grad.unsqueeze(-1)
+
+                axis = list(range(len(p_shape)))
+                for _ in axis:
+                    beta_m = beta_m[None, ...]
+                    beta_rms = beta_rms[None, ...]
+                    beta_adafactor = beta_adafactor[None, ...]
+
+                mom.mul_(beta_m).add_((1 - beta_m) * batch_g)
+                rms.mul_(beta_rms).add_((1 - beta_rms) * (batch_g**2))
+
+                # Update factored accumulators
+                (
+                    state["fac_vec_col"],
+                    state["fac_vec_row"],
+                    state["fac_vec_v"],
+                    fac_g,
+                ) = update_factors(
+                    state["fac_vec_col"],
+                    state["fac_vec_row"],
+                    state["fac_vec_v"],
+                    batch_g,
+                    p_shape,
+                    beta_adafactor,
+                )
+
+                # Prepare tensors for kernel
+                kernel_tensors = self._prepare_kernel_tensors(p, state, control_params, layer_idx)
+
+                # Remove the last dimension for kernel compatibility
+                mom_kernel = mom.squeeze(-1)
+                rms_kernel = rms.squeeze(-1)
+
+                # Call CUDA kernel
+                velo_cuda_kernel.velo_kernel(
+                    grad,  # gradient
+                    p,     # parameters
+                    mom_kernel,  # momentum
+                    rms_kernel,  # RMS
+                    kernel_tensors['fac_row'],    # factored row
+                    kernel_tensors['fac_col'],    # factored col
+                    kernel_tensors['fac_v'],      # factored full
+                    self.second_moment,           # second moment buffer
+                    kernel_tensors['input_weights'],
+                    kernel_tensors['input_bias'],
+                    kernel_tensors['hidden_weights'],
+                    kernel_tensors['hidden_bias'],
+                    kernel_tensors['output_weights'],
+                    kernel_tensors['output_bias'],
+                    group["lr"] * lr_mult[-(1 + layer_idx)].item(),  # learning rate
+                    step_mult,    # step multiplier
+                    exp_mult,     # exp multiplier
+                    1e-6,         # epsilon
+                    group["step"],   # step number
+                    weight_decay,    # weight decay
+                    kernel_tensors['dc'],  # column dimension
+                    kernel_tensors['dr'],  # row dimension
+                    kernel_tensors['is_factored']  # is factored
+                )
         return
