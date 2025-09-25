@@ -8,6 +8,7 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/Exceptions.h>
+#include <torch/extension.h>
 
 #define BLOCK_SIZE 256
 #define ILP 4
@@ -67,153 +68,97 @@ __device__ void get_factored_dims(int* dims, int ndims, int& d0, int& d1, bool& 
     }
 }
 
-// Populate VeLO feature vector
+// VeLO features implementation
 template <typename T>
 __device__ void populate_velo_features(
     T* features,
-    const T* g,           // gradient
-    const T* p,           // parameters
-    const T* m,           // momentum (3 values per element)
-    const T* rms,         // RMS (1 value per element)
-    const T* fac_row,     // factored row accumulator
-    const T* fac_col,     // factored column accumulator
-    const T* fac_v,       // full factored accumulator
+    const T* grad,        // gradient
+    const T* param,       // parameters
+    const T* momentum,    // momentum
+    const T* rms,         // RMS
+    const T* row_factor,  // row scaling factors
+    const T* col_factor,  // column scaling factors
+    const T* fac_vec_row, // factored row accumulator
+    const T* fac_vec_col, // factored column accumulator
     const int idx,
-    const int n_elements,
-    const int num_rows,
     const int num_cols,
+    const int num_rows,
     const int row_stride,
     const int col_stride,
+    const int n_elements,
     const float epsilon,
-    const bool is_factored
+    const int vector_like
 ) {
-    // Get row and column indices for factored case
-    const int row_idx = is_factored ? (idx / row_stride) % num_rows : 0;
-    const int col_idx = is_factored ? (idx / col_stride) % num_cols : 0;
 
-    // Basic features
-    T grad_val = g[idx];
-    T param_val = p[idx];
-    T clipped_g = fmaxf(fminf(grad_val, 0.1f), -0.1f);
+    const int row_idx = vector_like ? idx : (idx / row_stride) % num_rows;
+    const int col_idx = vector_like ? idx : (idx / col_stride) % num_cols;
 
-    // Momentum values (3 decay rates)
-    T m1 = m[idx];
-    T m2 = m[idx + n_elements];
-    T m3 = m[idx + 2 * n_elements];
 
-    // RMS value
-    T rms_val = rms[idx];
-    T rsqrt_rms = safe_rsqrt(rms_val + epsilon);
+    features[0] = grad[idx];
+    features[1] = fminf(fmaxf(grad[idx], -0.1), 0.1); // Clipped gradient
+    features[2] = param[idx];
+    features[3] = momentum[idx];
+    features[4] = momentum[idx + n_elements];
+    features[5] = momentum[idx + 2 * n_elements];
+    features[6] = rms[idx];
+    features[10] = __frsqrt_rn(features[6] + epsilon); // rsqrt of RMS;
+    features[7] = features[3] * features[10]; // normalized momentum
+    features[8] = features[4] * features[10]; // normalized gradient
+    features[9] = features[5] * features[10]; // normalized momentum
 
-    // Store basic features
-    features[0] = grad_val;
-    features[1] = clipped_g;
-    features[2] = param_val;
-    features[3] = m1;
-    features[4] = m2;
-    features[5] = m3;
-    features[6] = rms_val;
+    T tmp_row_factor1 = row_factor[col_idx];
+    T tmp_row_factor2 = row_factor[col_idx + num_cols];
+    T tmp_row_factor3 = row_factor[col_idx + 2 * num_cols];
 
-    // Normalized momentum features
-    features[7] = m1 * rsqrt_rms;
-    features[8] = m2 * rsqrt_rms;
-    features[9] = m3 * rsqrt_rms;
-    features[10] = rsqrt_rms;
+    T tmp_col_factor1 = col_factor[row_idx];
+    T tmp_col_factor2 = col_factor[row_idx + num_rows];
+    T tmp_col_factor3 = col_factor[row_idx + 2 * num_rows];
 
-    // Factored features
-    if (is_factored && fac_row != nullptr && fac_col != nullptr) {
-        // Row factors (3 decay rates)
-        T fr1 = fac_row[col_idx];
-        T fr2 = fac_row[col_idx + num_cols];
-        T fr3 = fac_row[col_idx + 2 * num_cols];
+    features[11] = tmp_row_factor1  * (vector_like ? static_cast<T>(1) : tmp_col_factor1) * features[0];
+    features[12] = tmp_row_factor2  * (vector_like ? static_cast<T>(1) : tmp_col_factor2) * features[0];
+    features[13] = tmp_row_factor3  * (vector_like ? static_cast<T>(1) : tmp_col_factor3) * features[0];
 
-        // Column factors (3 decay rates)
-        T fc1 = fac_col[row_idx];
-        T fc2 = fac_col[row_idx + num_rows];
-        T fc3 = fac_col[row_idx + 2 * num_rows];
+    features[14] = features[0] *  features[10]; // normalized gradient
+    features[15] = fac_vec_row[col_idx];
+    features[16] = fac_vec_row[col_idx + num_cols];
+    features[17] = fac_vec_row[col_idx + 2 * num_cols];
+    features[18] = fac_vec_col[row_idx];
+    features[19] = fac_vec_col[row_idx + num_rows];
+    features[20] = fac_vec_col[row_idx + 2 * num_rows];
+    features[21] = __frsqrt_rn(features[15] + 1e-8f); // rsqrt of fac_vec_row[0]
+    features[22] = __frsqrt_rn(features[16] + 1e-8f); // rsqrt of fac_vec_row[1]
+    features[23] = __frsqrt_rn(features[17] + 1e-8f); // rsqrt
+    features[24] = __frsqrt_rn(features[18] + 1e-8f); // rsqrt of fac_vec_col[0]
+    features[25] = __frsqrt_rn(features[19] + 1e-8f); // rsqrt of fac_vec_col[1]
+    features[26] = __frsqrt_rn(features[20] + 1e-8f); // rsqrt of fac_vec_col[2]
+    features[27] = tmp_row_factor1 * (vector_like ? static_cast<T>(1) : tmp_col_factor1) * features[3];
+    features[28] = tmp_row_factor2 * (vector_like ? static_cast<T>(1) : tmp_col_factor2) * features[4];
+    features[29] = tmp_row_factor3 * (vector_like ? static_cast<T>(1) : tmp_col_factor3) * features[5];
 
-        // Factored gradient
-        T fac_g1 = grad_val * safe_rsqrt(fr1) * safe_rsqrt(fc1);
-        T fac_g2 = grad_val * safe_rsqrt(fr2) * safe_rsqrt(fc2);
-        T fac_g3 = grad_val * safe_rsqrt(fr3) * safe_rsqrt(fc3);
-
-        features[11] = fac_g1;
-        features[12] = fac_g2;
-        features[13] = fac_g3;
-
-        // Row and column features
-        features[14] = fr1;
-        features[15] = fr2;
-        features[16] = fr3;
-        features[17] = fc1;
-        features[18] = fc2;
-        features[19] = fc3;
-
-        // Reciprocal square roots
-        features[20] = safe_rsqrt(fr1 + 1e-8f);
-        features[21] = safe_rsqrt(fr2 + 1e-8f);
-        features[22] = safe_rsqrt(fr3 + 1e-8f);
-        features[23] = safe_rsqrt(fc1 + 1e-8f);
-        features[24] = safe_rsqrt(fc2 + 1e-8f);
-        features[25] = safe_rsqrt(fc3 + 1e-8f);
-
-        // Factored momentum
-        features[26] = m1 * safe_rsqrt(fr1) * safe_rsqrt(fc1);
-        features[27] = m2 * safe_rsqrt(fr2) * safe_rsqrt(fc2);
-        features[28] = m3 * safe_rsqrt(fr3) * safe_rsqrt(fc3);
-    } else if (fac_v != nullptr) {
-        // Non-factored case
-        T fv1 = fac_v[idx];
-        T fv2 = fac_v[idx + n_elements];
-        T fv3 = fac_v[idx + 2 * n_elements];
-
-        features[11] = grad_val * safe_rsqrt(fv1);
-        features[12] = grad_val * safe_rsqrt(fv2);
-        features[13] = grad_val * safe_rsqrt(fv3);
-
-        // Duplicate features for compatibility
-        features[14] = fv1;
-        features[15] = fv2;
-        features[16] = fv3;
-        features[17] = fv1;
-        features[18] = fv2;
-        features[19] = fv3;
-
-        features[20] = safe_rsqrt(fv1 + 1e-8f);
-        features[21] = safe_rsqrt(fv2 + 1e-8f);
-        features[22] = safe_rsqrt(fv3 + 1e-8f);
-        features[23] = safe_rsqrt(fv1 + 1e-8f);
-        features[24] = safe_rsqrt(fv2 + 1e-8f);
-        features[25] = safe_rsqrt(fv3 + 1e-8f);
-
-        features[26] = m1 * safe_rsqrt(fv1);
-        features[27] = m2 * safe_rsqrt(fv2);
-        features[28] = m3 * safe_rsqrt(fv3);
-    }
-
-    // RMS normalized gradient
-    features[29] = grad_val * rsqrt_rms;
 }
 
 // Kernel for computing second moment statistics
+
+
 template <typename T>
 __global__ void velo_compute_moments_kernel(
-    T* __restrict__ g,
-    T* __restrict__ p,
-    T* __restrict__ m,
-    T* __restrict__ rms,
-    T* __restrict__ fac_row,
-    T* __restrict__ fac_col,
-    T* __restrict__ fac_v,
-    float* __restrict__ second_moment,
-    const int n_elements,
-    const int num_rows,
-    const int num_cols,
-    const int row_stride,
-    const int col_stride,
-    const float epsilon,
-    const bool is_factored
-) {
+        T *__restrict__ grad,
+        T *__restrict__ param,
+        T *__restrict__ momentum,
+        T *__restrict__ rms,
+        T *__restrict__ row_factor,
+        T *__restrict__ col_factor,
+        T *__restrict__ fac_vec_row,
+        T *__restrict__ fac_vec_col,
+        float *__restrict__ second_moment,
+        const int n_elements,
+        const int num_rows,
+        const int num_cols,
+        const int row_stride,
+        const int col_stride,
+        const float epsilon,
+        const int vector_like)
+{
     const int tid = threadIdx.x;
     const int warp_id = tid / warpSize;
     const int lane_id = tid % warpSize;
@@ -236,10 +181,12 @@ __global__ void velo_compute_moments_kernel(
         T features[INPUT_DIM];
 
         populate_velo_features<T>(
-            features, g, p, m, rms, fac_row, fac_col, fac_v,
-            i, n_elements, num_rows, num_cols, row_stride, col_stride,
-            epsilon, is_factored
+            features, grad, param, momentum, rms,
+            row_factor, col_factor, fac_vec_row, fac_vec_col, i,
+            num_cols, num_rows, row_stride, col_stride, n_elements,
+            epsilon, vector_like
         );
+
 
         // Accumulate squared features
         #pragma unroll
@@ -285,40 +232,46 @@ __global__ void velo_compute_moments_kernel(
 // Kernel for applying VeLO optimizer updates
 template <typename T>
 __global__ void velo_apply_kernel(
-    T* __restrict__ g,
-    T* __restrict__ p,
-    T* __restrict__ m,
-    T* __restrict__ rms,
-    T* __restrict__ fac_row,
-    T* __restrict__ fac_col,
-    T* __restrict__ fac_v,
-    const float* __restrict__ second_moment,
-    const T* __restrict__ input_weights,
-    const T* __restrict__ input_bias,
-    const T* __restrict__ hidden_weights,
-    const T* __restrict__ hidden_bias,
-    const T* __restrict__ output_weights,
-    const T* __restrict__ output_bias,
+    T *__restrict__ grad,
+    T *__restrict__ param,
+    T *__restrict__ momentum,
+    T *__restrict__ rms,
+    T *__restrict__ row_factor,
+    T *__restrict__ col_factor,
+    T *__restrict__ fac_vec_row,
+    T *__restrict__ fac_vec_col,
+    const float *__restrict__ second_moment,
+    const T *__restrict__ input_weights,
+    const T *__restrict__ input_bias,
+    const T *__restrict__ hidden_weights,
+    const T *__restrict__ hidden_bias,
+    const T *__restrict__ output_weights,
+    const T *__restrict__ output_bias,
+    const float lr,
+    const float step_mult,
+    const float exp_mult,
+    const float weight_decay,
     const int n_elements,
     const int num_rows,
     const int num_cols,
     const int row_stride,
     const int col_stride,
-    const float step_mult,
-    const float exp_mult,
     const float epsilon,
-    const float lr,
-    const float step,
-    const float weight_decay,
-    const bool is_factored
-) {
+    const int vector_like)
+{
     const int tid = threadIdx.x;
-    __shared__ float s_m[INPUT_DIM];
+    __shared__ float s_m[INPUT_DIM];  // Extra slot for global parameter scale
 
     // Load normalized second moments into shared memory
     if (tid < INPUT_DIM) {
         s_m[tid] = rsqrtf((second_moment[tid] / n_elements) + 1e-5f);
     }
+
+    // Store global parameter scale at position INPUT_DIM
+    if (tid == INPUT_DIM) {
+        s_m[INPUT_DIM] = sqrtf((second_moment[2] / n_elements) + 1e-9f);
+    }
+    const float param_scale = 1/s_m[2];
     __syncthreads();
 
     // Process elements
@@ -326,9 +279,10 @@ __global__ void velo_apply_kernel(
         T features[INPUT_DIM];
 
         populate_velo_features<T>(
-            features, g, p, m, rms, fac_row, fac_col, fac_v,
-            i, n_elements, num_rows, num_cols, row_stride, col_stride,
-            epsilon, is_factored
+            features, grad, param, momentum, rms,
+            row_factor, col_factor, fac_vec_row, fac_vec_col, i,
+            num_cols, num_rows, row_stride, col_stride, n_elements,
+            epsilon, vector_like
         );
 
         // First hidden layer
@@ -375,30 +329,28 @@ __global__ void velo_apply_kernel(
             }
         }
 
-        // Compute parameter scale
-        T param_scale = sqrtf(fmaxf(p[i] * p[i], 1e-9f));
-
         // Compute update: direction * exp(magnitude * exp_mult) * step_mult * param_scale
         T update = param_scale * output_activations[0] * __expf(output_activations[1] * exp_mult) * step_mult;
 
         // Apply update with learning rate
-        p[i] = p[i] - lr * update;
+        param[i] = param[i] - lr * update;
 
         // Apply weight decay if needed
         if (weight_decay > 0) {
-            p[i] = p[i] - weight_decay * lr * p[i];
+            param[i] = param[i] - weight_decay * lr * param[i];
         }
     }
 }
 
-void velo_kernel(
-    at::Tensor& g,
-    at::Tensor& p,
-    at::Tensor& m,
+void velo_kernel_simple(
+    at::Tensor& grad,
+    at::Tensor& param,
+    at::Tensor& momentum,
     at::Tensor& rms,
-    at::Tensor& fac_row,
-    at::Tensor& fac_col,
-    at::Tensor& fac_v,
+    at::Tensor& row_factor,
+    at::Tensor& col_factor,
+    at::Tensor& fac_vec_row,
+    at::Tensor& fac_vec_col,
     at::Tensor& second_moment,
     at::Tensor& input_weights,
     at::Tensor& input_bias,
@@ -410,32 +362,31 @@ void velo_kernel(
     const float step_mult,
     const float exp_mult,
     const float epsilon,
-    const float step,
     const float weight_decay,
     const int dc,
     const int dr,
-    const bool is_factored
+    const int vector_like
 ) {
-    const int n_elements = p.numel();
-    const int num_rows = is_factored ? p.size(dr) : 1;
-    const int num_cols = is_factored ? p.size(dc) : 1;
-    const int row_stride = is_factored ? p.stride(dr) : 1;
-    const int col_stride = is_factored ? p.stride(dc) : 1;
-
+    const int n_elements = param.numel();
+    const int num_rows = vector_like ? n_elements : param.size(dr);
+    const int num_cols = vector_like ? n_elements : param.size(dc);
+    const int row_stride = param.stride(dr);
+    const int col_stride = param.stride(dc);
     const int blocks_needed = (n_elements + BLOCK_SIZE - 1) / BLOCK_SIZE;
     const int num_blocks_for_occupancy = 1728;
     const int blocks = std::min(blocks_needed, num_blocks_for_occupancy);
 
     // First kernel: compute second moments
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(p.scalar_type(), "velo_compute_moments", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(param.scalar_type(), "velo_compute_moments", ([&] {
         velo_compute_moments_kernel<<<blocks, BLOCK_SIZE>>>(
-            g.data_ptr<scalar_t>(),
-            p.data_ptr<scalar_t>(),
-            m.data_ptr<scalar_t>(),
+            grad.data_ptr<scalar_t>(),
+            param.data_ptr<scalar_t>(),
+            momentum.data_ptr<scalar_t>(),
             rms.data_ptr<scalar_t>(),
-            is_factored ? fac_row.data_ptr<scalar_t>() : nullptr,
-            is_factored ? fac_col.data_ptr<scalar_t>() : nullptr,
-            !is_factored ? fac_v.data_ptr<scalar_t>() : nullptr,
+            row_factor.numel() > 0 ? row_factor.data_ptr<scalar_t>() : nullptr,
+            col_factor.numel() > 0 ? col_factor.data_ptr<scalar_t>() : nullptr,
+            fac_vec_row.numel() > 0 ? fac_vec_row.data_ptr<scalar_t>() : nullptr,
+            fac_vec_col.numel() > 0 ? fac_vec_col.data_ptr<scalar_t>() : nullptr,
             second_moment.data_ptr<float>(),
             n_elements,
             num_rows,
@@ -443,46 +394,44 @@ void velo_kernel(
             row_stride,
             col_stride,
             epsilon,
-            is_factored
+            vector_like
         );
     }));
 
     // Second kernel: apply updates
-    AT_DISPATCH_FLOATING_TYPES_AND_HALF(p.scalar_type(), "velo_apply", ([&] {
-        velo_apply_kernel<<<blocks, BLOCK_SIZE>>>(
-            g.data_ptr<scalar_t>(),
-            p.data_ptr<scalar_t>(),
-            m.data_ptr<scalar_t>(),
-            rms.data_ptr<scalar_t>(),
-            is_factored ? fac_row.data_ptr<scalar_t>() : nullptr,
-            is_factored ? fac_col.data_ptr<scalar_t>() : nullptr,
-            !is_factored ? fac_v.data_ptr<scalar_t>() : nullptr,
-            second_moment.data_ptr<float>(),
-            input_weights.data_ptr<scalar_t>(),
-            input_bias.data_ptr<scalar_t>(),
-            hidden_weights.data_ptr<scalar_t>(),
-            hidden_bias.data_ptr<scalar_t>(),
-            output_weights.data_ptr<scalar_t>(),
-            output_bias.data_ptr<scalar_t>(),
-            n_elements,
-            num_rows,
-            num_cols,
-            row_stride,
-            col_stride,
-            step_mult,
-            exp_mult,
-            epsilon,
-            lr,
-            step,
-            weight_decay,
-            is_factored
-        );
-    }));
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(param.scalar_type(), "velo_apply", ([&]
+                                                                            { velo_apply_kernel<<<blocks, BLOCK_SIZE>>>(
+                                                                                grad.data_ptr<scalar_t>(),
+                                                                                param.data_ptr<scalar_t>(),
+                                                                                momentum.data_ptr<scalar_t>(),
+                                                                                rms.data_ptr<scalar_t>(),
+                                                                                row_factor.numel() > 0 ? row_factor.data_ptr<scalar_t>() : nullptr,
+                                                                                col_factor.numel() > 0 ? col_factor.data_ptr<scalar_t>() : nullptr,
+                                                                                fac_vec_row.numel() > 0 ? fac_vec_row.data_ptr<scalar_t>() : nullptr,
+                                                                                fac_vec_col.numel() > 0 ? fac_vec_col.data_ptr<scalar_t>() : nullptr,
+                                                                                second_moment.data_ptr<float>(),
+                                                                                input_weights.data_ptr<scalar_t>(),
+                                                                                input_bias.data_ptr<scalar_t>(),
+                                                                                hidden_weights.data_ptr<scalar_t>(),
+                                                                                hidden_bias.data_ptr<scalar_t>(),
+                                                                                output_weights.data_ptr<scalar_t>(),
+                                                                                output_bias.data_ptr<scalar_t>(),
+                                                                                lr,
+                                                                                step_mult,
+                                                                                exp_mult,
+                                                                                weight_decay,
+                                                                                n_elements,
+                                                                                num_rows,
+                                                                                num_cols,
+                                                                                row_stride,
+                                                                                col_stride,
+                                                                                epsilon,
+                                                                                vector_like); }));
 
     AT_CUDA_CHECK(cudaGetLastError());
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("velo_kernel", &velo_kernel, "Velo CUDA kernel",
+    m.def("velo_kernel_simple", &velo_kernel_simple, "Simplified Velo CUDA kernel",
           py::call_guard<py::gil_scoped_release>());
 }

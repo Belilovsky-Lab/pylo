@@ -12,14 +12,15 @@ np.random.seed(42)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+
 # Create a simple neural network
 class SimpleNet(nn.Module):
-    def __init__(self, input_size=10, hidden_size=64, output_size=3):
+    def __init__(self, input_size=10, hidden_size=64, output_size=3, use_bias=True):
         super(SimpleNet, self).__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc1 = nn.Linear(input_size, hidden_size, bias=use_bias)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, output_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size, bias=use_bias)
+        self.fc3 = nn.Linear(hidden_size, output_size, bias=use_bias)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -29,6 +30,9 @@ class SimpleNet(nn.Module):
         x = self.fc3(x)
         return x
 
+# Configuration
+use_bias = False  # Set to False to disable biases in all linear layers
+print(f"Bias enabled: {use_bias}")
 # Generate synthetic dataset
 n_samples = 1000
 input_size = 10
@@ -46,7 +50,7 @@ dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # Training loop
 num_epochs = 25
-model = SimpleNet(input_size=input_size, output_size=output_size).to(device)
+model = SimpleNet(input_size=input_size, output_size=output_size, use_bias=use_bias).to(device)
 
 # Initialize VeLO_CUDA optimizer
 optimizer = VeLO_CUDA(model.parameters(), lr=1.0,num_steps=num_epochs * len(dataloader),legacy=False)

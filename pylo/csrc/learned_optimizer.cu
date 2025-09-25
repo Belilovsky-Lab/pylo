@@ -334,6 +334,7 @@
     const int blocks_needed = (n_elements + BLOCK_SIZE - 1) / (BLOCK_SIZE);
     const int num_blocks_for_occupancy =  1728;
     const int blocks = min(blocks_needed, num_blocks_for_occupancy);
+    
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(p.scalar_type(), "lo_kernel", ([&]
     { 
       lo_kernel<<<blocks, BLOCK_SIZE>>>(
