@@ -390,131 +390,12 @@ class VeLO_CUDA(Optimizer):
         control_params, lr_mult = self.collect_rnn_outputs(to_lstm_from_loss)
 
         if self.legacy:
-            return self._step_legacy(control_params, lr_mult)
+            return self._step_loop(control_params, lr_mult, self._process_param_legacy)
         else:
-            return self._step_kernel(control_params, lr_mult)
+            return self._step_loop(control_params, lr_mult, self._process_param_kernel)
 
-    def _step_legacy(self, control_params, lr_mult):
-        """Original Python-based implementation."""
-
-        for group in self.param_groups:
-            exp_mult = group["exp_mult"]
-            step_mult = group["step_mult"]
-            group["step"] += 1
-
-            for p in group["params"]:
-                beta_m = group["initial_momentum_decays"]
-                beta_rms = group["initial_rms_decays"]
-                beta_adafactor = group["initial_adafactor_decays"]
-                weight_decay = group["weight_decay"]
-                p_shape = p.shape
-
-                if p.grad is None:
-                    continue
-                grad = torch.clip(p.grad, -1000.0, 1000.0)
-                state = self.state[p]
-                mom = state["mom"]
-                rms = state["rms"]
-                layer_idx = state["layer_idx"]
-
-                batch_p = p.unsqueeze(-1)
-                batch_g = grad.unsqueeze(-1)
-                clipped_g = torch.clip(batch_g, -0.1, 0.1)
-
-                axis = list(range(len(p_shape)))
-                for _ in axis:
-                    beta_m = beta_m[None, ...]
-                    beta_rms = beta_rms[None, ...]
-                    beta_adafactor = beta_adafactor[None, ...]
-
-                mom.mul_(beta_m).add_((1 - beta_m) * batch_g)
-                rms.mul_(beta_rms).add_((1 - beta_rms) * (batch_g**2))
-                (
-                    state["fac_vec_col"],
-                    state["fac_vec_row"],
-                    state["fac_vec_v"],
-                    fac_g,
-                ) = update_factors(
-                    state["fac_vec_col"],
-                    state["fac_vec_row"],
-                    state["fac_vec_v"],
-                    batch_g,
-                    p_shape,
-                    beta_adafactor,
-                )
-                fac_vec_col, fac_vec_row, fac_vec_v = (
-                    state["fac_vec_col"],
-                    state["fac_vec_row"],
-                    state["fac_vec_v"],
-                )
-                rsqrt = torch.rsqrt(rms + 1e-6)
-                rms_norm_g = batch_g * rsqrt
-                inps = [
-                    batch_g,
-                    clipped_g,
-                    batch_p,
-                    mom,
-                    rms,
-                    mom * rsqrt,
-                    rsqrt,
-                    fac_g,
-                    rms_norm_g,
-                ]
-                f_dims = factored_dims(p_shape)
-                if f_dims is not None:
-                    d1, d0 = f_dims
-                    rp_row = [1] * (1 + len(p_shape))
-                    rp_col = [1] * (1 + len(p_shape))
-                    rp_row[d0] = p_shape[d0]
-                    rp_col[d1] = p_shape[d1]
-                    row_feat = fac_vec_row.unsqueeze(d0).repeat(rp_row)
-                    col_feat = fac_vec_col.unsqueeze(d1).repeat(rp_col)
-
-                    inps.extend(
-                        [
-                            row_feat,
-                            col_feat,
-                            torch.rsqrt(row_feat + 1e-8),
-                            torch.rsqrt(col_feat + 1e-8),
-                        ]
-                    )
-                    reduced_d1 = d1 - 1 if d1 > d0 else d1 #!r change
-                    row_col_mean = fac_vec_row.mean(dim=reduced_d1, keepdim=True) #!r change
-                    row_factor = safe_rsqrt(fac_vec_row / (row_col_mean + 1e-9))
-                    col_factor = safe_rsqrt(fac_vec_col)
-                    fac_mom_mult = (
-                        mom * row_factor.unsqueeze(d0) * col_factor.unsqueeze(d1)
-                    )
-                    inps.append(fac_mom_mult)
-                else:
-                    inps.extend(
-                        [
-                            fac_vec_v,
-                            fac_vec_v,
-                            torch.rsqrt(fac_vec_v + 1e-8),
-                            torch.rsqrt(fac_vec_v + 1e-8),
-                        ]
-                    )
-                    fac_mom_mult = mom * torch.pow(fac_vec_v, -0.5)
-                    inps.append(fac_mom_mult)
-                inps = [second_moment_normalizer(i, axis=axis) for i in inps]
-                inps = torch.cat(inps, dim=-1)
-                self.network_stack.update_params(control_params[-(1 + layer_idx)])
-                direction, magnitude, _ = self.network_stack(inps).split(1, dim=-1)
-                param_scale = torch.sqrt(torch.mean(p**2) + 1e-9)
-                step = param_scale * (
-                    direction * torch.exp(magnitude * exp_mult) * step_mult
-                ).squeeze(-1)
-                step = lr_mult[-(1 + layer_idx)] * step
-                p.add_(step, alpha=-group["lr"])
-                if weight_decay > 0:
-                    p.add_(p, alpha=-weight_decay * group["lr"])
-        return
-
-    def _step_kernel(self, control_params, lr_mult):
-        """Simplified CUDA kernel-based implementation."""
-        # Reset second moment accumulator
-
+    def _step_loop(self, control_params, lr_mult, param_processor):
+        """Common parameter loop for both implementations."""
         for group in self.param_groups:
             exp_mult = group["exp_mult"]
             step_mult = group["step_mult"]
@@ -524,21 +405,20 @@ class VeLO_CUDA(Optimizer):
             for p in group["params"]:
                 if p.grad is None:
                     continue
-                self.second_moment.zero_()
+
                 grad = torch.clip(p.grad, -1000.0, 1000.0)
                 state = self.state[p]
-                momentum = state["mom"]  # Keep original dimensions
-                rms = state["rms"]      # Keep original dimensions
+                mom = state["mom"]
+                rms = state["rms"]
                 layer_idx = state["layer_idx"]
                 p_shape = p.shape
-                f_dims = factored_dims(p_shape)
 
-                # Get decay parameters similar to step_legacy
+                # Get decay parameters
                 beta_m = group["initial_momentum_decays"]
                 beta_rms = group["initial_rms_decays"]
                 beta_adafactor = group["initial_adafactor_decays"]
 
-                # Prepare batched gradient like in step_legacy
+                # Prepare batched gradient
                 batch_g = grad.unsqueeze(-1)
 
                 # Expand decay parameters for broadcasting
@@ -548,10 +428,10 @@ class VeLO_CUDA(Optimizer):
                     beta_rms = beta_rms[None, ...]
                     beta_adafactor = beta_adafactor[None, ...]
 
-                # Update momentum similar to step_legacy
-                momentum.mul_(beta_m).add_((1 - beta_m) * batch_g)
+                # Update momentum
+                mom.mul_(beta_m).add_((1 - beta_m) * batch_g)
 
-                # Update RMS similar to step_legacy
+                # Update RMS
                 rms.mul_(beta_rms).add_((1 - beta_rms) * (batch_g**2))
 
                 # Update factored accumulators using update_factors
@@ -569,76 +449,178 @@ class VeLO_CUDA(Optimizer):
                     beta_adafactor,
                 )
 
-                # Get MLP weights from control_params
-                self.network_stack.update_params(control_params[-(1 + layer_idx)])
-                mlp_params = dict(self.network_stack.named_parameters())
-                input_weights = mlp_params["input_weights"].data
-                input_bias = mlp_params["input_bias"].data
-                hidden_weights = mlp_params["hidden_weights.0"].data
-                hidden_bias = mlp_params["hidden_bias.0"].data
-                output_weights = mlp_params["output_weights"].data
-                output_bias = mlp_params["output_bias"].data
-
-                # Calculate row_factor and col_factor from factored accumulators
-                if f_dims is not None:
-                    d1, d0 = f_dims
-                    dc, dr = d0, d1  # column dimension, row dimension
-                    vector_like = 0  # factored mode
-                    fac_vec_row = state["fac_vec_row"]
-                    fac_vec_col = state["fac_vec_col"]
-
-                    # Calculate row_factor: safe_rsqrt(fac_vec_row / row_col_mean)
-                    reduced_d1 = d1 - 1 if d1 > d0 else d1
-                    row_col_mean = torch.mean(fac_vec_row, dim=reduced_d1, keepdim=True)
-                    row_factor = safe_rsqrt(fac_vec_row / (row_col_mean + 1e-9))
-                    col_factor = safe_rsqrt(fac_vec_col)
-                else:
-                    # Non-factored case - empty tensors
-                    dc, dr = 0, 0   # no factored dimensions
-                    vector_like = 1  # vector mode
-                    fac_vec_row = torch.empty(0, device=self.device, dtype=p.dtype)
-                    fac_vec_col = torch.empty(0, device=self.device, dtype=p.dtype)
-                    row_factor = torch.empty(0, device=self.device, dtype=p.dtype)
-                    col_factor = torch.empty(0, device=self.device, dtype=p.dtype)
-
-                # Call simplified CUDA kernel with essential features only
-                
-                momentum_front = momentum.permute(2, 0, 1)  # (3, ...) to (3, ...)
-                momentum_front = momentum_front.contiguous()
-                
-                row_factor_front = row_factor.permute(1, 0)
-                row_factor_front = row_factor_front.contiguous()
-                col_factor_front = col_factor.permute(1, 0)
-                col_factor_front = col_factor_front.contiguous()
-                
-                fac_vec_row_front = fac_vec_row.permute(1, 0)
-                fac_vec_row_front = fac_vec_row_front.contiguous()
-                fac_vec_col_front = fac_vec_col.permute(1, 0)
-                fac_vec_col_front = fac_vec_col_front.contiguous()
-                velo_cuda_kernel.velo_kernel_simple(
-                    grad,  # gradient
-                    p,  # parameters
-                    momentum_front,  # momentum (keep original dimensions)
-                    rms,  # RMS (keep original dimensions)
-                    row_factor_front,  # row scaling factors
-                    col_factor_front,  # column scaling factors
-                    fac_vec_row_front,  # factored row accumulator
-                    fac_vec_col_front,  # factored column accumulator
-                    self.second_moment,  # second moment buffer (size 30)
-                    input_weights,  # MLP input weights
-                    input_bias,  # MLP input bias
-                    hidden_weights,  # MLP hidden weights
-                    hidden_bias,  # MLP hidden bias
-                    output_weights,  # MLP output weights
-                    output_bias,  # MLP output bias
-                    group["lr"] * lr_mult[-(1 + layer_idx)].item(),  # learning rate
-                    step_mult,  # step multiplier
-                    exp_mult,  # exp multiplier
-                    1e-6,  # epsilon
-                    weight_decay,  # weight decay
-                    dc,  # column dimension (0 if not factored)
-                    dr,  # row dimension (0 if not factored)
-                    vector_like,  # 0 for factored, 1 for vector mode
+                # Call the parameter processor function
+                param_processor(
+                    p=p,
+                    grad=grad,
+                    batch_g=batch_g,
+                    state=state,
+                    mom=mom,
+                    rms=rms,
+                    fac_g=fac_g,
+                    p_shape=p_shape,
+                    axis=axis,
+                    layer_idx=layer_idx,
+                    control_params=control_params,
+                    lr_mult=lr_mult,
+                    group=group,
+                    exp_mult=exp_mult,
+                    step_mult=step_mult,
+                    weight_decay=weight_decay,
                 )
-
         return
+
+    def _process_param_legacy(self, p, grad, batch_g, state, mom, rms, fac_g, p_shape,
+                               axis, layer_idx, control_params, lr_mult, group,
+                               exp_mult, step_mult, weight_decay):
+        """Original Python-based parameter processing."""
+        batch_p = p.unsqueeze(-1)
+        clipped_g = torch.clip(batch_g, -0.1, 0.1)
+
+        fac_vec_col, fac_vec_row, fac_vec_v = (
+            state["fac_vec_col"],
+            state["fac_vec_row"],
+            state["fac_vec_v"],
+        )
+        rsqrt = torch.rsqrt(rms + 1e-6)
+        rms_norm_g = batch_g * rsqrt
+        inps = [
+            batch_g,
+            clipped_g,
+            batch_p,
+            mom,
+            rms,
+            mom * rsqrt,
+            rsqrt,
+            fac_g,
+            rms_norm_g,
+        ]
+        f_dims = factored_dims(p_shape)
+        if f_dims is not None:
+            d1, d0 = f_dims
+            rp_row = [1] * (1 + len(p_shape))
+            rp_col = [1] * (1 + len(p_shape))
+            rp_row[d0] = p_shape[d0]
+            rp_col[d1] = p_shape[d1]
+            row_feat = fac_vec_row.unsqueeze(d0).repeat(rp_row)
+            col_feat = fac_vec_col.unsqueeze(d1).repeat(rp_col)
+
+            inps.extend(
+                [
+                    row_feat,
+                    col_feat,
+                    torch.rsqrt(row_feat + 1e-8),
+                    torch.rsqrt(col_feat + 1e-8),
+                ]
+            )
+            reduced_d1 = d1 - 1 if d1 > d0 else d1
+            row_col_mean = fac_vec_row.mean(dim=reduced_d1, keepdim=True)
+            row_factor = safe_rsqrt(fac_vec_row / (row_col_mean + 1e-9))
+            col_factor = safe_rsqrt(fac_vec_col)
+            fac_mom_mult = (
+                mom * row_factor.unsqueeze(d0) * col_factor.unsqueeze(d1)
+            )
+            inps.append(fac_mom_mult)
+        else:
+            inps.extend(
+                [
+                    fac_vec_v,
+                    fac_vec_v,
+                    torch.rsqrt(fac_vec_v + 1e-8),
+                    torch.rsqrt(fac_vec_v + 1e-8),
+                ]
+            )
+            fac_mom_mult = mom * torch.pow(fac_vec_v, -0.5)
+            inps.append(fac_mom_mult)
+        second_moment_sum = [torch.sum(torch.square(i),dim=axis) for i in inps] #torch.mean(torch.square(x), dim=axis, keepdim=True)
+        inps = [second_moment_normalizer(i, axis=axis) for i in inps]
+        inps = torch.cat(inps, dim=-1)
+        self.network_stack.update_params(control_params[-(1 + layer_idx)])
+        direction, magnitude, _ = self.network_stack(inps).split(1, dim=-1)
+        param_scale = torch.sqrt(torch.mean(p**2) + 1e-9)
+        step = param_scale * (
+            direction * torch.exp(magnitude * exp_mult) * step_mult
+        ).squeeze(-1)
+        step = lr_mult[-(1 + layer_idx)] * step
+        if True:
+            p.add_(step, alpha=-group["lr"])
+            if weight_decay > 0:
+                p.add_(p, alpha=-weight_decay * group["lr"])
+        return direction * torch.exp(magnitude * exp_mult) * step_mult
+
+    def _process_param_kernel(self, p, grad, batch_g, state, mom, rms, fac_g, p_shape,
+                               axis, layer_idx, control_params, lr_mult, group,
+                               exp_mult, step_mult, weight_decay):
+        """CUDA kernel-based parameter processing."""
+        self.second_moment.zero_()
+
+        f_dims = factored_dims(p_shape)
+
+        # Get MLP weights from control_params
+        self.network_stack.update_params(control_params[-(1 + layer_idx)])
+        mlp_params = dict(self.network_stack.named_parameters())
+        input_weights = mlp_params["input_weights"].data
+        input_bias = mlp_params["input_bias"].data
+        hidden_weights = mlp_params["hidden_weights.0"].data
+        hidden_bias = mlp_params["hidden_bias.0"].data
+        output_weights = mlp_params["output_weights"].data
+        output_bias = mlp_params["output_bias"].data
+
+        # Calculate row_factor and col_factor from factored accumulators
+        if f_dims is not None:
+            d1, d0 = f_dims
+            dc, dr = d1, d0  # column dimension, row dimension
+            vector_like = 0  # factored mode
+            fac_vec_row = state["fac_vec_row"]
+            fac_vec_col = state["fac_vec_col"]
+
+            # Calculate row_factor: safe_rsqrt(fac_vec_row / row_col_mean)
+            reduced_d1 = d1 - 1 if d1 > d0 else d1
+            row_col_mean = torch.mean(fac_vec_row, dim=reduced_d1, keepdim=True)
+            row_factor = safe_rsqrt(fac_vec_row / (row_col_mean + 1e-9))
+            col_factor = safe_rsqrt(fac_vec_col)
+        else:
+            # Non-factored case - empty tensors
+            dc, dr = 0, 0   # no factored dimensions
+            vector_like = 1  # vector mode
+            fac_vec_row = torch.empty(0, device=self.device, dtype=p.dtype)
+            fac_vec_col = torch.empty(0, device=self.device, dtype=p.dtype)
+            row_factor = torch.empty(0, device=self.device, dtype=p.dtype)
+            col_factor = torch.empty(0, device=self.device, dtype=p.dtype)
+
+        # Prepare tensors for CUDA kernel
+        grad_front = grad.unsqueeze(0).contiguous()
+        param_front = p.contiguous()
+        momentum_front = mom.permute(2, 0, 1).contiguous()
+        rms_front = rms.permute(2, 0, 1).contiguous()
+        row_factor_front = row_factor.permute(1, 0).unsqueeze(1).contiguous()
+        col_factor_front = col_factor.permute(1, 0).unsqueeze(2).contiguous()
+        fac_vec_row_front = fac_vec_row.permute(1, 0).contiguous()
+        fac_vec_col_front = fac_vec_col.permute(1, 0).contiguous()
+
+        velo_cuda_kernel.velo_kernel_simple(
+            grad_front,  # gradient
+            param_front,  # parameters
+            momentum_front,  # momentum
+            rms_front,  # RMS
+            row_factor_front,  # row scaling factors
+            col_factor_front,  # column scaling factors
+            fac_vec_row_front,  # factored row accumulator
+            fac_vec_col_front,  # factored column accumulator
+            self.second_moment,  # second moment buffer (size 30)
+            input_weights,  # MLP input weights
+            input_bias,  # MLP input bias
+            hidden_weights,  # MLP hidden weights
+            hidden_bias,  # MLP hidden bias
+            output_weights,  # MLP output weights
+            output_bias,  # MLP output bias
+            group["lr"] * lr_mult[-(1 + layer_idx)].item(),  # learning rate
+            step_mult,  # step multiplier
+            exp_mult,  # exp multiplier
+            1e-6,  # epsilon
+            weight_decay,  # weight decay
+            dc,  # column dimension (0 if not factored)
+            dr,  # row dimension (0 if not factored)
+            vector_like,  # 0 for factored, 1 for vector mode
+        )
+        

@@ -260,19 +260,18 @@ __global__ void velo_apply_kernel(
     const int vector_like)
 {
     const int tid = threadIdx.x;
-    __shared__ float s_m[INPUT_DIM];  // Extra slot for global parameter scale
+    __shared__ float s_m[INPUT_DIM+1];  // Extra slot for global parameter scale
 
     // Load normalized second moments into shared memory
     if (tid < INPUT_DIM) {
         s_m[tid] = rsqrtf((second_moment[tid] / n_elements) + 1e-5f);
     }
 
-    // Store global parameter scale at position INPUT_DIM
     if (tid == INPUT_DIM) {
         s_m[INPUT_DIM] = sqrtf((second_moment[2] / n_elements) + 1e-9f);
     }
-    const float param_scale = 1/s_m[2];
     __syncthreads();
+
 
     // Process elements
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n_elements; i += blockDim.x * gridDim.x) {
@@ -330,7 +329,7 @@ __global__ void velo_apply_kernel(
         }
 
         // Compute update: direction * exp(magnitude * exp_mult) * step_mult * param_scale
-        T update = param_scale * output_activations[0] * __expf(output_activations[1] * exp_mult) * step_mult;
+        T update = s_m[INPUT_DIM] * output_activations[0] * __expf(output_activations[1] * exp_mult) * step_mult;
 
         // Apply update with learning rate
         param[i] = param[i] - lr * update;
