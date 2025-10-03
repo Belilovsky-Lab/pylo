@@ -579,24 +579,30 @@ class VeLO_CUDA(Optimizer):
             row_col_mean = torch.mean(fac_vec_row, dim=reduced_d1, keepdim=True)
             row_factor = safe_rsqrt(fac_vec_row / (row_col_mean + 1e-9))
             col_factor = safe_rsqrt(fac_vec_col)
+            grad_front = grad.unsqueeze(0).contiguous()
+            param_front = p.contiguous()
+            momentum_front = mom.permute(2, 0, 1).contiguous()
+            rms_front = rms.permute(2, 0, 1).contiguous()
+            row_factor_front = row_factor.permute(1, 0).unsqueeze(1).contiguous()
+            col_factor_front = col_factor.permute(1, 0).unsqueeze(2).contiguous()
+            fac_vec_row_front = fac_vec_row.permute(1, 0).contiguous()
+            fac_vec_col_front = fac_vec_col.permute(1, 0).contiguous()
         else:
             # Non-factored case - empty tensors
             dc, dr = 0, 0   # no factored dimensions
             vector_like = 1  # vector mode
-            fac_vec_row = torch.empty(0, device=self.device, dtype=p.dtype)
-            fac_vec_col = torch.empty(0, device=self.device, dtype=p.dtype)
-            row_factor = torch.empty(0, device=self.device, dtype=p.dtype)
-            col_factor = torch.empty(0, device=self.device, dtype=p.dtype)
-
-        # Prepare tensors for CUDA kernel
-        grad_front = grad.unsqueeze(0).contiguous()
-        param_front = p.contiguous()
-        momentum_front = mom.permute(2, 0, 1).contiguous()
-        rms_front = rms.permute(2, 0, 1).contiguous()
-        row_factor_front = row_factor.permute(1, 0).unsqueeze(1).contiguous()
-        col_factor_front = col_factor.permute(1, 0).unsqueeze(2).contiguous()
-        fac_vec_row_front = fac_vec_row.permute(1, 0).contiguous()
-        fac_vec_col_front = fac_vec_col.permute(1, 0).contiguous()
+            fac_vec_row = state["fac_vec_v"]
+            fac_vec_col = state["fac_vec_v"]
+            row_factor = safe_rsqrt(fac_vec_row + 1e-9)
+            col_factor = torch.ones_like(row_factor)
+            grad_front = grad.unsqueeze(0).contiguous()
+            param_front = p.contiguous()
+            momentum_front = mom.permute(1, 0).contiguous()
+            rms_front = rms.permute(1, 0).contiguous()
+            row_factor_front = row_factor.unsqueeze(0).contiguous()
+            col_factor_front = col_factor.unsqueeze(1).contiguous()
+            fac_vec_row_front = fac_vec_row.contiguous()
+            fac_vec_col_front = fac_vec_col.contiguous()
 
         velo_cuda_kernel.velo_kernel_simple(
             grad_front,  # gradient
@@ -623,4 +629,3 @@ class VeLO_CUDA(Optimizer):
             dr,  # row dimension (0 if not factored)
             vector_like,  # 0 for factored, 1 for vector mode
         )
-        

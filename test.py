@@ -31,7 +31,7 @@ class SimpleNet(nn.Module):
         return x
 
 # Configuration
-use_bias = False  # Set to False to disable biases in all linear layers
+use_bias = True  # Set to False to disable biases in all linear layers
 print(f"Bias enabled: {use_bias}")
 # Generate synthetic dataset
 n_samples = 1000
