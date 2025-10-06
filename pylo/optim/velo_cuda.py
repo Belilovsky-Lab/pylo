@@ -3,6 +3,7 @@ VeLO: An implementation of VeLO from https://arxiv.org/abs/2211.09760.
 
 Some of the following code is adapted from https://github.com/google/learned_optimization/blob/main/learned_optimization/research/general_lopt/hyper_v2.py
 """
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -10,9 +11,11 @@ from torch.optim import Optimizer
 import torch.nn.functional as F
 from collections import OrderedDict
 import velo_cuda_kernel
+import time
 
 from pylo.models.VeLO_MLP import VeLOMLP
 from pylo.models.VeLO_RNN import VeLORNN
+
 
 def init_factors(p):
     shape = p.shape
@@ -20,7 +23,7 @@ def init_factors(p):
     # Place multiple momentum dimension first: (3,) + shape
     shape_with_batch = (3,) + shape
     if f_dims is not None:
-        dc , dr = f_dims
+        dc, dr = f_dims
         # Adjust indices since we now have a leading dimension
         # d0 and d1 need to be offset by 1
         vr_shape = list(shape)
@@ -58,8 +61,14 @@ def update_factors(
 
         # Mean over grad dimensions, then add leading dimension for broadcasting
         breakpoint()
-        new_v_row = decay_view * v_row + mixing_view * grad_sqr.mean(dim=d0, keepdim=True)[None, ...]
-        new_v_col = decay_view * v_col + mixing_view * grad_sqr.mean(dim=d1, keepdim=True)[None, ...]
+        new_v_row = (
+            decay_view * v_row
+            + mixing_view * grad_sqr.mean(dim=d0, keepdim=True)[None, ...]
+        )
+        new_v_col = (
+            decay_view * v_col
+            + mixing_view * grad_sqr.mean(dim=d1, keepdim=True)[None, ...]
+        )
 
         # reduced_d1 needs +1 offset because of leading dimension in v_row
         reduced_d1 = (d1 + 1) - 1 if (d1 + 1) > (d0 + 1) else (d1 + 1)
@@ -68,7 +77,7 @@ def update_factors(
         row_factor = safe_rsqrt(new_v_row / (row_col_mean + 1e-9))
         col_factor = safe_rsqrt(new_v_col)
         # Broadcast g to [n_decays, ...] then multiply with factors
-        y = g[None, ...] * row_factor.unsqueeze(d0+1) * col_factor.unsqueeze(d1+1)
+        y = g[None, ...] * row_factor.unsqueeze(d0 + 1) * col_factor.unsqueeze(d1 + 1)
         return new_v_col, new_v_row, torch.tensor([], dtype=torch.float32), y
 
     else:
@@ -191,36 +200,48 @@ class BufferLossAccumulators:
         feature1 = torch.clamp(feature1, -1, 1)
         return torch.where(state["iteration"] <= 2, feature1 * 0, feature1)
 
-
-def lstm_features_for_tensor(p, g, m, rms, fraction_trained, loss_features, device):
-
+@torch.compile
+def lstm_features_for_tensor(p, g, m, rms, fraction_left, loss_features, device):
+    # Timing: Normalization
     norm_mult = torch.rsqrt(torch.clamp(torch.mean(p**2), min=1e-9))
     g = g * norm_mult
     p = p * norm_mult
     m = m * norm_mult
     rms = rms * norm_mult
 
-    inputs = {}
+    # Pre-allocate result tensor with total size 30
+    # Feature layout: ['fraction_left' 0:9, 'loss_features' 9:18, 'mean_rms' 18:19, 'rank' 19:24, 'var_m' 24:27, 'var_rms' 27:30]
+    result = torch.empty(30, device=device, dtype=torch.float32)
 
-    fraction_left = fractional_tanh_embed(fraction_trained)
-    inputs["fraction_left"] = fraction_left.to(device)
-    inputs["loss_features"] = loss_features
+    # Timing: Fraction features (now just copying pre-computed values)
 
-    leading_axis = list(range(0, len(p.shape)))
+    result[0:9] = fraction_left
+    result[9:18] = loss_features
+
+
+    # Timing: Momentum features
+
+    leading_axis = list(range(1, len(p.shape)+1))
     mean_m = torch.mean(m, dim=leading_axis, keepdim=True)
     var_m = torch.mean((m - mean_m) ** 2, dim=leading_axis)
-    inputs["var_m"] = clip_log_abs(var_m, scale=10.0)
+    result[24:27] = clip_log_abs(var_m, scale=10.0)
+
+
+    # Timing: RMS features
 
     mean_rms = torch.mean(rms, dim=leading_axis, keepdim=True)
     var_rms = torch.mean((rms - mean_m) ** 2, dim=leading_axis)
-    inputs["mean_rms"] = clip_log_abs(mean_rms.view(-1), scale=10.0)
-    inputs["var_rms"] = clip_log_abs(var_rms, scale=10.0)
+    result[18:19] = clip_log_abs(mean_rms.view(-1), scale=10.0)
+    result[27:30] = clip_log_abs(var_rms, scale=10.0)
+
+
+
 
     n_rank = sum([1 for dim in p.shape if dim > 1])
-    inputs["rank"] = F.one_hot(torch.tensor(n_rank), num_classes=5).float().to(device)
-    values = sorted_values(inputs)
-    values = [v if len(v.shape) == 1 else v.unsqueeze(0) for v in values]
-    return torch.cat(values, dim=0)
+    result[19:24] = F.one_hot(torch.tensor(n_rank), num_classes=5).float().to(device)
+
+
+    return result
 
 
 class VeLO_CUDA(Optimizer):
@@ -258,13 +279,16 @@ class VeLO_CUDA(Optimizer):
         rms_decays = torch.tensor(rms_decays).to(self.device)
         adafactor_decays = torch.tensor(adafactor_decays).to(self.device)
         mom_decay = param_to_decay(
-            decay_to_param(torch.tensor(initial_momentum_decays, device=self.device)) + momentum_decays
+            decay_to_param(torch.tensor(initial_momentum_decays, device=self.device))
+            + momentum_decays
         )
         rms_decays = param_to_decay(
-            decay_to_param(torch.tensor(initial_rms_decays, device=self.device)) + rms_decays
+            decay_to_param(torch.tensor(initial_rms_decays, device=self.device))
+            + rms_decays
         )
         adafactor_decays = param_to_decay(
-            decay_to_param(torch.tensor(initial_adafactor_decays, device=self.device)) + adafactor_decays
+            decay_to_param(torch.tensor(initial_adafactor_decays, device=self.device))
+            + adafactor_decays
         )
         clip_mom_decays = torch.clip(mom_decay, 0.0, 1.0).to(self.device)
         clip_rms_decays = torch.clip(rms_decays, 0.0, 1.0).to(self.device)
@@ -308,7 +332,9 @@ class VeLO_CUDA(Optimizer):
 
         # Initialize second moment buffer for CUDA kernel
         if not self.legacy:
-            self.second_moment = torch.zeros(30, dtype=torch.float32, device=self.device)
+            self.second_moment = torch.zeros(
+                30, dtype=torch.float32, device=self.device
+            )
 
         self.init_state()
 
@@ -346,8 +372,13 @@ class VeLO_CUDA(Optimizer):
     def collect_rnn_outputs(self, to_lstm_from_loss):
         rnn_inputs = []
         lstm_hidden_states = []
+
+        # Timing: Feature extraction loop
+        start_feature_loop = time.perf_counter()
         for group in self.param_groups:
             fraction_trained = group["step"] / self.num_steps
+            # Pre-compute fraction_left once per group (same for all parameters in group)
+            fraction_left = fractional_tanh_embed(fraction_trained).to(self.device)
             for p in group["params"]:
                 grad = torch.clip(p.grad, -1000.0, 1000.0)
                 state = self.state[p]
@@ -357,18 +388,30 @@ class VeLO_CUDA(Optimizer):
                     lstm_features_for_tensor(
                         p,
                         grad,
-                        mom.permute(list(range(1,mom.dim())) + [0]),
-                        rms.permute(list(range(1,rms.dim())) + [0]),
-                        fraction_trained,
+                        mom,
+                        rms,
+                        fraction_left,
                         to_lstm_from_loss,
                         self.device,
                     )
                 )
+        feature_loop_time = time.perf_counter() - start_feature_loop
+
+        # Timing: Stack and flip
+        start_stack = time.perf_counter()
         rnn_inputs = torch.stack(rnn_inputs)
         rnn_inputs = torch.flip(rnn_inputs, [0])
+        stack_time = time.perf_counter() - start_stack
+
+        # Timing: RNN forward pass
+        start_rnn_forward = time.perf_counter()
         control_params, lr_mult, self.lstm_hidden_state = self.rnn(
             rnn_inputs, self.lstm_hidden_state
         )
+        rnn_forward_time = time.perf_counter() - start_rnn_forward
+
+        #print(f"  RNN breakdown - Features: {feature_loop_time*1000:.3f}ms | Stack: {stack_time*1000:.3f}ms | Forward: {rnn_forward_time*1000:.3f}ms")
+
         return control_params, lr_mult
 
         # Add this method to save the loss buffer and LSTM hidden state
@@ -401,14 +444,29 @@ class VeLO_CUDA(Optimizer):
 
     @torch.no_grad()
     def step(self, loss):
+        # Timing: Buffer update
+        start_buffer = time.perf_counter()
         self.loss_buffer = self.buffer_loss_fns.update(self.loss_buffer, loss)
         to_lstm_from_loss = self.buffer_loss_fns.features(self.loss_buffer)
-        control_params, lr_mult = self.collect_rnn_outputs(to_lstm_from_loss)
+        buffer_time = time.perf_counter() - start_buffer
 
+        # Timing: RNN forward pass
+        start_rnn = time.perf_counter()
+        control_params, lr_mult = self.collect_rnn_outputs(to_lstm_from_loss)
+        rnn_time = time.perf_counter() - start_rnn
+
+        # Timing: Kernel/step loop
+        start_kernel = time.perf_counter()
         if self.legacy:
-            return self._step_loop(control_params, lr_mult, self._process_param_legacy)
+            result = self._step_loop(control_params, lr_mult, self._process_param_legacy)
         else:
-            return self._step_loop(control_params, lr_mult, self._process_param_kernel)
+            result = self._step_loop(control_params, lr_mult, self._process_param_kernel)
+        kernel_time = time.perf_counter() - start_kernel
+
+        # Print timings
+        #print(f"Buffer: {buffer_time*1000:.3f}ms | RNN: {rnn_time*1000:.3f}ms | Kernel: {kernel_time*1000:.3f}ms")
+
+        return result
 
     def _step_loop(self, control_params, lr_mult, param_processor):
         """Common parameter loop for both implementations."""
@@ -455,16 +513,17 @@ class VeLO_CUDA(Optimizer):
                 if f_dims is not None:
                     dc, dr = f_dims
                     state["fac_vec_row"].lerp_(
-                        grad_sqr.mean(dim=dr, keepdim=True)[None, ...], 
-                        1 - beta_adafactor_view.to(state["fac_vec_row"].dtype
-                    ))
+                        grad_sqr.mean(dim=dr, keepdim=True)[None, ...],
+                        1 - beta_adafactor_view.to(state["fac_vec_row"].dtype),
+                    )
                     state["fac_vec_col"].lerp_(
                         grad_sqr.mean(dim=dc, keepdim=True)[None, ...],
-                        1 - beta_adafactor_view.to(state["fac_vec_col"].dtype)
+                        1 - beta_adafactor_view.to(state["fac_vec_col"].dtype),
                     )
                 else:
                     state["fac_vec_v"].lerp_(
-                        grad_sqr[None, ...], 1 - beta_adafactor_view.to(state["fac_vec_v"].dtype)
+                        grad_sqr[None, ...],
+                        1 - beta_adafactor_view.to(state["fac_vec_v"].dtype),
                     )
 
                 # Call the parameter processor function
@@ -486,9 +545,25 @@ class VeLO_CUDA(Optimizer):
                 )
         return
 
-    def _process_param_legacy(self, p, grad, batch_g, state, mom, rms, fac_g, p_shape,
-                               axis, layer_idx, control_params, lr_mult, group,
-                               exp_mult, step_mult, weight_decay):
+    def _process_param_legacy(
+        self,
+        p,
+        grad,
+        batch_g,
+        state,
+        mom,
+        rms,
+        fac_g,
+        p_shape,
+        axis,
+        layer_idx,
+        control_params,
+        lr_mult,
+        group,
+        exp_mult,
+        step_mult,
+        weight_decay,
+    ):
         """Original Python-based parameter processing."""
         batch_p = p[None, ...]  # Now batch dimension is first
         clipped_g = torch.clip(batch_g, -0.1, 0.1)
@@ -553,7 +628,9 @@ class VeLO_CUDA(Optimizer):
             inps.append(fac_mom_mult)
         # Adjust axis for second moment normalization (skip batch dimension)
         axis_for_norm = [i + 1 for i in axis]
-        second_moment_sum = [torch.sum(torch.square(i), dim=axis_for_norm) for i in inps]
+        second_moment_sum = [
+            torch.sum(torch.square(i), dim=axis_for_norm) for i in inps
+        ]
         inps = [second_moment_normalizer(i, axis=axis_for_norm) for i in inps]
         inps = torch.cat(inps, dim=0)  # Cat along batch dimension
         self.network_stack.update_params(control_params[-(1 + layer_idx)])
@@ -569,9 +646,23 @@ class VeLO_CUDA(Optimizer):
                 p.add_(p, alpha=-weight_decay * group["lr"])
         return direction * torch.exp(magnitude * exp_mult) * step_mult
 
-    def _process_param_kernel(self, p, grad, state, mom, rms, p_shape,
-                               axis, layer_idx, control_params, lr_mult, group,
-                               exp_mult, step_mult, weight_decay):
+    def _process_param_kernel(
+        self,
+        p,
+        grad,
+        state,
+        mom,
+        rms,
+        p_shape,
+        axis,
+        layer_idx,
+        control_params,
+        lr_mult,
+        group,
+        exp_mult,
+        step_mult,
+        weight_decay,
+    ):
         """CUDA kernel-based parameter processing."""
         self.second_moment.zero_()
 
@@ -605,7 +696,7 @@ class VeLO_CUDA(Optimizer):
             # No permute needed - dimensions are already in the right order
         else:
             # Non-factored case
-            dc, dr = 0, 0   # no factored dimensions
+            dc, dr = 0, 0  # no factored dimensions
             vector_like = 1  # vector mode
             fac_vec_row = state["fac_vec_v"]
             fac_vec_col = state["fac_vec_v"]
