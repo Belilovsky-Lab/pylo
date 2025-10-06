@@ -201,7 +201,7 @@ class BufferLossAccumulators:
         return torch.where(state["iteration"] <= 2, feature1 * 0, feature1)
 
 @torch.compile
-def lstm_features_for_tensor(p, g, m, rms, fraction_left, loss_features, device):
+def lstm_features_for_tensor(p, g, m, rms, fraction_left, loss_features, rank_onehot, device):
     # Timing: Normalization
     norm_mult = torch.rsqrt(torch.clamp(torch.mean(p**2), min=1e-9))
     g = g * norm_mult
@@ -235,10 +235,8 @@ def lstm_features_for_tensor(p, g, m, rms, fraction_left, loss_features, device)
     result[27:30] = clip_log_abs(var_rms, scale=10.0)
 
 
-
-
-    n_rank = sum([1 for dim in p.shape if dim > 1])
-    result[19:24] = F.one_hot(torch.tensor(n_rank), num_classes=5).float().to(device)
+    # Use pre-computed rank one-hot encoding
+    result[19:24] = rank_onehot
 
 
     return result
@@ -362,6 +360,9 @@ class VeLO_CUDA(Optimizer):
                         state["fac_vec_col"].to(self.device),
                         state["fac_vec_v"].to(self.device),
                     )
+                    # Pre-compute rank one-hot encoding (static for each parameter)
+                    n_rank = sum([1 for dim in p_shape if dim > 1])
+                    state["rank_onehot"] = F.one_hot(torch.tensor(n_rank), num_classes=5).float().to(self.device)
                 layer_idx += 1
         self.lstm_hidden_state = (
             self.lstm_init_state[0].repeat(layer_idx, 1).to(self.device),
@@ -392,6 +393,7 @@ class VeLO_CUDA(Optimizer):
                         rms,
                         fraction_left,
                         to_lstm_from_loss,
+                        state["rank_onehot"],
                         self.device,
                     )
                 )
