@@ -271,7 +271,7 @@ class VeLO_naive(Optimizer):
             mup_lrs=mup_lrs,
             weight_decay=weight_decay,
         )
-        super(VeLO, self).__init__(params, defaults)
+        super(VeLO_naive, self).__init__(params, defaults)
 
         self.buffer_loss_fns = BufferLossAccumulators(self.device)
         self.loss_buffer = self.buffer_loss_fns.init(num_steps)
@@ -350,7 +350,7 @@ class VeLO_naive(Optimizer):
 
     def state_dict(self):
         # First get the standard optimizer state_dict
-        state_dict = super(VeLO, self).state_dict()
+        state_dict = super(VeLO_naive, self).state_dict()
 
         # Add our additional state information
         state_dict["loss_buffer"] = self.loss_buffer
@@ -367,7 +367,7 @@ class VeLO_naive(Optimizer):
         num_steps = state_dict.pop("num_steps")
 
         # Load the standard optimizer state
-        super(VeLO, self).load_state_dict(state_dict)
+        super(VeLO_naive, self).load_state_dict(state_dict)
 
         # Restore our custom state
         self.loss_buffer = loss_buffer
