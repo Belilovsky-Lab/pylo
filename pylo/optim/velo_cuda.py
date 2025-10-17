@@ -60,7 +60,6 @@ def update_factors(
         mixing_view = mixing_rate.view(-1, *[1] * len(g_shape))
 
         # Mean over grad dimensions, then add leading dimension for broadcasting
-        breakpoint()
         new_v_row = (
             decay_view * v_row
             + mixing_view * grad_sqr.mean(dim=d0, keepdim=True)[None, ...]
