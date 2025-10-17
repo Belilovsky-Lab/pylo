@@ -206,7 +206,7 @@ def lstm_features_for_tensor(p, g, m, rms, fraction_trained, loss_features, devi
     return torch.cat(values, dim=0)
 
 
-class VeLO(Optimizer):
+class VeLO_naive(Optimizer):
     def __init__(
         self,
         params,
