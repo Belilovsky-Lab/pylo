@@ -271,7 +271,7 @@ class VeLO_CUDA(Optimizer):
         mup_lrs=None,
         hf_key_rnn="Pauljanson002/VeLO_RNN",
         hf_key_mlp="Pauljanson002/VeLO_MLP",
-        legacy=True,
+        legacy=False,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         momentum_decays = torch.tensor(momentum_decays).to(self.device)
