@@ -60,7 +60,6 @@ def update_factors(
         mixing_view = mixing_rate.view(-1, *[1] * len(g_shape))
 
         # Mean over grad dimensions, then add leading dimension for broadcasting
-        breakpoint()
         new_v_row = (
             decay_view * v_row
             + mixing_view * grad_sqr.mean(dim=d0, keepdim=True)[None, ...]
@@ -270,7 +269,7 @@ class VeLO_CUDA(Optimizer):
         mup_lrs=None,
         hf_key_rnn="Pauljanson002/VeLO_RNN",
         hf_key_mlp="Pauljanson002/VeLO_MLP",
-        legacy=True,
+        legacy=False,
     ):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         momentum_decays = torch.tensor(momentum_decays).to(self.device)

@@ -1,5 +1,5 @@
 /**
- * Author: Jules
+ * Author: 
  * Date: 2025-08-31
  *  CUDA kernel for Velo optimizer
  */
