@@ -1,7 +1,7 @@
-Welcome to PyLO's documentation!
+Welcome to PyLO !
 ================================
 
-.. image:: assets/method.png
+.. image:: ../assets/overview.png
    :alt: Overview
 
 .. .. image:: https://img.shields.io/github/license/yourusername/pylo.svg
@@ -14,6 +14,8 @@ Welcome to PyLO's documentation!
 
 PyLo is a PyTorch-based learned optimizer library that enables researchers and practitioners to implement, experiment with, and share learned optimizers. 
 It bridges the gap found in the research of learned optimizers and using it for actual practical scenarios.
+
+Checkout our paper here: `arXiv <https://arxiv.org/abs/2506.10315>`_
 
 .. note::
    New to PyLo? Check out our :doc:`usage` guide.
