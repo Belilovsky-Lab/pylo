@@ -3,7 +3,7 @@
 # PyLO: Learned Optimization for PyTorch
 
 [![arXiv](https://img.shields.io/badge/arXiv-2410.06511-b31b1b.svg)](https://arxiv.org/abs/2506.10315)
-[![CODEML 2025](https://img.shields.io/badge/CODEML-ICML2025-lightblue.svg)](https://openreview.net/pdf/7cb52bfc5efb9b2ce3d9bde2c59b20a841e4e070.pdf)
+<!-- [![CODEML 2025](https://img.shields.io/badge/CODEML-ICML2025-lightblue.svg)](https://openreview.net/pdf/7cb52bfc5efb9b2ce3d9bde2c59b20a841e4e070.pdf) -->
 [![forum](https://img.shields.io/badge/PyLO-Docs-green.svg)](https://belilovsky-lab.github.io/pylo/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-lightgrey.svg)](./LICENSE)
 
