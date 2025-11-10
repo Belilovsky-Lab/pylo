@@ -72,15 +72,14 @@ Documentation
 .. toctree::
    :maxdepth: 2
    :caption: API Reference:
-   
+
    api/index
 
-.. .. toctree::
-..    :maxdepth: 1
-..    :caption: Development:
-   
-..    contributing
-..    changelog
+.. toctree::
+   :maxdepth: 1
+   :caption: Development:
+
+   changelog
 
 .. Benchmarks
 .. =========
