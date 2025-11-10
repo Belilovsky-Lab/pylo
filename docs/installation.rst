@@ -16,6 +16,8 @@ Installation without custom CUDA kernels
 
 .. code-block:: bash
 
+    git clone https://github.com/Belilovsky-Lab/pylo
+    cd pylo
     pip install .
 
 Installation with custom CUDA kernels
@@ -23,7 +25,10 @@ Installation with custom CUDA kernels
 
 .. code-block:: bash
 
-    pip install . --config-settings="--build-option=--cuda"
+    git clone https://github.com/Belilovsky-Lab/pylo
+    cd pylo
+    pip install .
+    python setup.py install --cuda
 
 Install patch for MuP
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

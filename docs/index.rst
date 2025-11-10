@@ -1,9 +1,8 @@
 Welcome to PyLO's documentation!
 ================================
 
-.. .. image:: https://img.shields.io/pypi/v/pylo.svg
-..    :target: https://pypi.python.org/pypi/pylo
-..    :alt: PyPI Version
+.. image:: assets/method.png
+   :alt: Overview
 
 .. .. image:: https://img.shields.io/github/license/yourusername/pylo.svg
 ..    :target: https://github.com/yourusername/pylo/blob/main/LICENSE
@@ -33,13 +32,13 @@ Quick Example
 .. code-block:: python
 
     import torch
-    from pylo.optim import VeLO
+    from pylo.optim import VeLO_CUDA
     
     # Initialize a model
     model = torch.nn.Linear(10, 2)
     
     # Create a learned optimizer instance
-    optimizer = VeLO(model.parameters())
+    optimizer = VeLO_CUDA(model.parameters())
     
     # Use it like any PyTorch optimizer
     for epoch in range(10):
@@ -98,11 +97,11 @@ If you use PyLo in your research, please cite:
 
 .. code-block:: bibtex
 
-   @software{pylo2025,
-   author = {Paul Janson, Benjamin Therien, Quentin Anthony, Xialong Huang, Abhinav Moudgil and Eugene Belilovsky},
-   title = {PyLo: A PyTorch Library for Learned Optimizers},
-   year = {2025},
-   url = {https://github.com/Belilovsky-Lab/pylo}
+   @article{pylo,
+   title={PyLO: Towards Accessible Learned Optimizers in PyTorch},
+   author={Janson, Paul and Therien, Benjamin and Anthony, Quentin and Huang, Xiaolong and Moudgil, Abhinav and Belilovsky, Eugene},
+   journal={arXiv preprint arXiv:2506.10315},
+   year={2025}
    }
 
 .. Indices and tables
