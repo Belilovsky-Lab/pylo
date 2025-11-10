@@ -22,7 +22,7 @@ copyright = f"{datetime.now().year}, Belilovsky Labs"
 author = "Belilovsky Labs"
 
 # The full version, including alpha/beta/rc tags
-release = "0.1.0"  # Replace with your actual version number
+release = "0.2.0"  # Replace with your actual version number
 version = ".".join(release.split(".")[:2])  # Short version
 
 # -- General configuration ---------------------------------------------------
