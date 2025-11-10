@@ -102,7 +102,7 @@ autodoc_default_options = {
 
 # Mock imports for modules that can't be installed in docs environment
 autodoc_mock_imports = [
-    "velo_cuda_kernel",
+    "velo_cuda_kernel", "AdafacLO_CUDA" , "MuLO_CUDA", "VeLO_CUDA"
 ]
 
 
