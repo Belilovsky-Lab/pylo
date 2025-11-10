@@ -1,4 +1,13 @@
+<div align="center">
+    
 # PyLO: Learned Optimization for PyTorch
+
+[![arXiv](https://img.shields.io/badge/arXiv-2410.06511-b31b1b.svg)](https://arxiv.org/abs/2506.10315)
+[![CODEML 2025](https://img.shields.io/badge/CODEML-ICML2025-lightblue.svg)](https://openreview.net/pdf/7cb52bfc5efb9b2ce3d9bde2c59b20a841e4e070.pdf)
+[![forum](https://img.shields.io/badge/PyLO-Docs-green.svg)](https://belilovsky-lab.github.io/pylo/)
+[![License](https://img.shields.io/badge/License-BSD_3--Clause-lightgrey.svg)](./LICENSE)
+
+</div>
 
 PyLO provides efficient PyTorch implementations of cutting-edge learned optimizers. These optimizers work as drop-in replacements to standard PyTorch optimizers, while potentially delivering improved performance with no hyperparameter tuning. With its huggingface integration, PyLO allows users to download their own optimizers from the huggingface Hub and take advantage of our high-performance kernels for training new optimizees. 
 
