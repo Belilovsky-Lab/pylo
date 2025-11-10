@@ -100,4 +100,9 @@ autodoc_default_options = {
     "exclude-members": "__weakref__",
 }
 
+# Mock imports for modules that can't be installed in docs environment
+autodoc_mock_imports = [
+    "velo_cuda_kernel",
+]
+
 
