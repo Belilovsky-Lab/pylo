@@ -122,3 +122,11 @@ Basic Scheduler Example
         # Print current learning rate
         current_lr = scheduler.get_last_lr()[0]
         print(f'Epoch {epoch}, LR: {current_lr:.6f}')
+
+
+Complete Training Examples
+---------------------------
+
+For more comprehensive, real-world examples, visit the `pylo_examples repository <https://github.com/Belilovsky-Lab/pylo_examples>`_.
+
+The examples repository provides production-ready training scripts for Image Classification and Language Modeling tasks
