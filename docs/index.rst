@@ -57,7 +57,7 @@ Documentation
    :caption: Getting Started:
    
    installation
-   .. usage
+   background
    .. basic_concepts
 
 .. toctree::
@@ -65,6 +65,8 @@ Documentation
    :caption: User Guide:
    
    usage
+   how_it_works
+   concepts
    .. tutorials/index
    .. examples/index
    .. benchmarks
