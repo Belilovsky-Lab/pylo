@@ -66,7 +66,7 @@ More Examples
 Looking for complete, runnable examples? Check out the `pylo_examples repository <https://github.com/Belilovsky-Lab/pylo_examples>`_ which includes:
 
 * **Image Classification** - Training Vision Transformers (ViT) and ResNets on ImageNet and CIFAR-10
-* **Language Modeling** - Training GPT-2 and other transformer models
+* **Language Modeling** - Training GPT-2 models
 * **Distributed Training** - Multi-GPU examples with FSDP and DDP
 
 Each example includes detailed setup instructions, training scripts, and configuration files to help you get started quickly.
