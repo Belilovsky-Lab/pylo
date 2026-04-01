@@ -5,9 +5,10 @@ __all__ = [
     "MetaMLP",
     "VeLOMLP",
     "VeLORNN",
-    "AdafacLO_naive", 
-    "MuLO_naive", 
+    "AdafacLO_naive",
+    "MuLO_naive",
     "VeLO_naive",
+    "Celo2_naive",
 ]
 
 # Try to import CUDA-based optimizers

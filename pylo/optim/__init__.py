@@ -1,10 +1,11 @@
 from pylo.optim.AdafacLO_naive import AdafacLO_naive
 from pylo.optim.MuLO_naive import MuLO_naive
 from pylo.optim.Velo_naive import VeLO_naive
+from pylo.optim.Celo2_naive import Celo2_naive
 from pylo.optim.velo_cuda import VeLO_CUDA
 
 # Initialize with optimizers we know we can import
-__all__ = ["AdafacLO_naive", "MuLO_naive", "VeLO_naive"]
+__all__ = ["AdafacLO_naive", "MuLO_naive", "VeLO_naive", "Celo2_naive"]
 
 # Try to import CUDA-based optimizers
 try:
