@@ -2,26 +2,35 @@
 
 **Last updated:** 2026-04-01
 
-## Status: Phase 1 Complete (Naive Implementation)
+## Status: Phase 2 In Progress (CUDA Kernel Scaffolding)
 
-All core components implemented and tested. 8/8 tests passing.
+Phase 1 (naive implementation) complete. Phase 2 (CUDA acceleration) scaffolding done and verified. 9/9 tests passing.
 
 | Component | Status | File |
 |-----------|--------|------|
 | Checkpoint conversion | Done | `scripts/convert_celo2_checkpoint.py` |
-| Celo2 MLP model | Done | `pylo/models/Celo2_MLP.py` |
+| Celo2 MLP model (dense first layer) | Done | `pylo/models/Celo2_MLP.py` |
 | Converted weights | Done | `pylo/models/celo2_weights.pt` |
 | Newton-Schulz util | Done | `pylo/util/newton_schulz.py` |
 | Celo2_naive optimizer | Done | `pylo/optim/Celo2_naive.py` |
+| Celo2_cuda optimizer | Done | `pylo/optim/Celo2_cuda.py` |
+| CUDA kernel | Done | `pylo/csrc/celo2_kernel.cu` |
+| Naive vs CUDA comparison script | Done | `scripts/compare_celo2_naive_cuda.py` |
 | Package registration | Done | `pylo/optim/__init__.py`, `pylo/__init__.py` |
-| Tests (8/8 passing) | Done | `tests/test_celo2.py` |
+| Tests (9/9 passing) | Done | `tests/test_celo2.py` |
+| Build registration (setup.py) | Done | `setup.py` (`celo2_cuda_kernel` extension) |
 
-### Verification Results (2026-03-31)
+### Verification Results (2026-03-31 — Phase 1)
 - MLP forward pass: JAX vs PyTorch max diff **~1.8e-7**
 - Newton-Schulz: JAX vs PyTorch max diff **~1e-6**
 - Linear regression convergence: loss drops **>90%** in 300 steps
 - MLP classification convergence: accuracy improves from **20%** (random) to **>50%**
 - State save/load roundtrip: **exact match**
+
+### Verification Results (2026-04-01 — Phase 2)
+- Dense vs per-group first layer equivalence: **exact match** (atol=1e-6)
+- Naive vs CUDA numerical match (50 steps): max param diff **~1.6e-7** (PASS, threshold 1e-3)
+- CUDA speedup on small model: **~2.8–3.9x** (will be larger on bigger models)
 
 ---
 
@@ -41,7 +50,7 @@ Port CELO2 (the full version with Newton-Schulz orthogonalization + AdamW for bi
 | Aspect | AdafacLO | CELO2 |
 |--------|----------|-------|
 | MLP size | 39→32→32→2 | 30→8→8→3 |
-| First layer | Single weight matrix | 14 separate per-input-group matrices |
+| First layer | Single weight matrix | Single dense matrix (originally 14 per-group, consolidated) |
 | Output dims | 2 (direction, magnitude) | 3 (direction, magnitude, unused) |
 | exp_mult | 0.001 | 0.0 (magnitude=1 always) |
 | Orthogonalization | None | Newton-Schulz (5 iters) for 2D params |
@@ -111,14 +120,15 @@ All inputs are second-moment normalized across spatial dims before MLP forward p
 
 ### Celo2 MLP Model (`pylo/models/Celo2_MLP.py`)
 - `Celo2MLP` class inheriting from `nn.Module`
-- First layer: 14 separate `nn.Parameter` weight matrices (one per input group), outputs summed + shared bias + ReLU
+- First layer: single `nn.Linear(30, 8)` applied to concatenated input groups (consolidated from original 14 per-group matrices — mathematically equivalent, verified by test)
 - Hidden layer: `nn.Linear(8, 8)` + ReLU
 - Output layer: `nn.Linear(8, 3)`
-- `from_pretrained_file(path)` class method to load converted `.pt` checkpoint
+- `from_pretrained_file(path)` class method — auto-detects and converts old per-group checkpoint format via `_convert_grouped_to_dense()`
 
 ### Checkpoint Conversion (`scripts/convert_celo2_checkpoint.py`)
 - Loads `theta.state` via Flax deserialization
 - Transposes all weight matrices (JAX→PyTorch convention)
+- Concatenates 14 per-group JAX weights into single dense `first_layer.weight` (8, 30)
 - Saves as `pylo/models/celo2_weights.pt`
 
 ### Newton-Schulz Orthogonalization (`pylo/util/newton_schulz.py`)
@@ -151,7 +161,7 @@ All inputs are second-moment normalized across spatial dims before MLP forward p
   - Standard AdamW with beta1=0.9, beta2=0.95, eps=1e-8
   - Bias-corrected, decoupled weight decay
 
-### Tests (`tests/test_celo2.py`) — 8/8 passing
+### Tests (`tests/test_celo2.py`) — 9/9 passing
 1. `test_1d_params_get_adamw` — 1D params routed to AdamW
 2. `test_input_output_layers_get_adamw` — first/last 2D params routed to AdamW
 3. `test_hidden_layers_get_celo2` — hidden 2D weights routed to CELO2
@@ -160,6 +170,7 @@ All inputs are second-moment normalized across spatial dims before MLP forward p
 6. `test_no_nan_in_parameters` — no NaN/Inf after 50 steps
 7. `test_mlp_classification_converges` — accuracy >50% on synthetic 5-class task
 8. `test_optimizer_state_roundtrip` — save/load produces identical training trajectory
+9. `test_dense_matches_per_group` — dense first layer matches old per-group approach (atol=1e-6)
 
 ---
 
@@ -169,18 +180,22 @@ All inputs are second-moment normalized across spatial dims before MLP forward p
 2. **AdamW**: Self-contained inline implementation within the optimizer class. No dependency on `torch.optim.AdamW`.
 3. **Checkpoint hosting**: Local `.pt` file only for now. No HuggingFace push.
 4. **LR / weight decay**: Standard PyTorch pattern — `lr` as constructor arg, users attach `lr_scheduler` externally. Weight decay applied additively after the learned step.
-5. **Scope**: Naive (CPU-compatible) version only. CUDA kernel deferred.
+5. **Dense first layer**: Consolidated 14 per-input-group weight matrices into a single `nn.Linear(30, 8)`. Mathematically equivalent (verified), simpler, and directly compatible with CUDA kernel layout. Old per-group checkpoints auto-converted on load.
+6. **CUDA kernel scope**: Kernel handles feature construction + second-moment normalization + MLP inference only. Newton-Schulz, output normalization, weight decay, and AdamW branch remain in Python. This matches the AdafacLO/VeLO pattern.
+7. **CUDA state layout**: Leading decay dimensions `(n_decays,) + p_shape` for contiguous kernel access (vs trailing in naive). Accumulator updates use `lerp_` pattern matching VeLO CUDA.
 
 ---
 
-## Next Steps (Phase 2 — Not Yet Started)
+## Next Steps (Phase 3 — Not Yet Started)
 
+- [x] ~~CUDA kernel for performance~~ — Done (`pylo/csrc/celo2_kernel.cu`)
+- [x] ~~Naive vs CUDA numerical equivalence~~ — Verified (~1.6e-7 max diff over 50 steps)
 - [ ] Full numerical match test: compare single optimizer step JAX vs PyTorch end-to-end
-- [ ] Benchmark on real tasks (e.g., CIFAR-10 ResNet, small GPT)
-- [ ] CUDA kernel for performance (`pylo/csrc/celo2_kernel.cu`)
+- [ ] Benchmark on real tasks (e.g., CIFAR-10 ViT, small GPT) — naive vs CUDA timing
 - [ ] Push converted checkpoint to HuggingFace for `from_pretrained()` loading
-- [ ] Add `Celo2_naive` to pylo documentation (index.rst, usage.rst)
+- [ ] Add `Celo2_naive` and `Celo2_cuda` to pylo documentation (index.rst, usage.rst)
 - [ ] Support for `celo2-base` variant (orthogonalize=False, MLP for all params)
+- [ ] Profile CUDA kernel occupancy and optimize for large models
 
 ---
 
@@ -188,13 +203,17 @@ All inputs are second-moment normalized across spatial dims before MLP forward p
 
 ```
 pylo/
+├── csrc/
+│   ├── celo2_kernel.cu            # CELO2 CUDA kernel (two-kernel: moments + apply)
+│   └── ...
 ├── models/
-│   ├── Celo2_MLP.py              # CELO2 MLP model (30→8→8→3)
+│   ├── Celo2_MLP.py              # CELO2 MLP model (30→8→8→3, dense first layer)
 │   ├── celo2_weights.pt           # Converted pretrained weights
 │   └── ...
 ├── optim/
 │   ├── Celo2_naive.py             # CELO2 optimizer (naive/CPU)
-│   ├── __init__.py                # Updated: exports Celo2_naive
+│   ├── Celo2_cuda.py              # CELO2 optimizer (CUDA-accelerated)
+│   ├── __init__.py                # Updated: exports Celo2_naive, Celo2_cuda
 │   └── ...
 ├── util/
 │   ├── newton_schulz.py           # Newton-Schulz orthogonalization
@@ -202,6 +221,7 @@ pylo/
 ├── __init__.py                    # Updated: exports Celo2_naive
 scripts/
 ├── convert_celo2_checkpoint.py    # JAX→PyTorch checkpoint converter
+├── compare_celo2_naive_cuda.py    # Naive vs CUDA numerical comparison & timing
 tests/
-├── test_celo2.py                  # All CELO2 tests (8 tests)
+├── test_celo2.py                  # All CELO2 tests (9 tests)
 ```

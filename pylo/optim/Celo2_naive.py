@@ -446,7 +446,7 @@ class Celo2_naive(Optimizer):
         input_groups = [second_moment_normalizer(inp, axis=norm_axis) for inp in input_groups]
 
         # MLP forward pass
-        mlp_out = self.network([inp.to(self.network.first_layer_bias.device) for inp in input_groups])
+        mlp_out = self.network([inp.to(self.network.first_layer.bias.device) for inp in input_groups])
         mlp_out = mlp_out.to(device)
 
         direction = mlp_out[..., 0]

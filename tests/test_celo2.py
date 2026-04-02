@@ -239,5 +239,74 @@ class TestStateSaveLoad:
             )
 
 
+# ── Dense vs per-group equivalence test ──────────────────────────────────────
+
+
+class TestDenseEquivalence:
+    """Verify that the single dense first layer produces identical outputs
+    to the old per-group weight approach."""
+
+    def test_dense_matches_per_group(self):
+        torch.manual_seed(0)
+        from pylo.models.Celo2_MLP import Celo2MLP, DEFAULT_INPUT_GROUP_DIMS
+
+        hidden_size = 8
+        input_group_dims = DEFAULT_INPUT_GROUP_DIMS  # [1,1,1,3,1,3,1,3,1,3,3,3,3,3]
+        total_dim = sum(input_group_dims)  # 30
+
+        # Build the new dense model with random weights
+        model = Celo2MLP()
+        nn.init.normal_(model.first_layer.weight)
+        nn.init.normal_(model.first_layer.bias)
+        nn.init.normal_(model.hidden.weight)
+        nn.init.normal_(model.hidden.bias)
+        nn.init.normal_(model.output.weight)
+        nn.init.normal_(model.output.bias)
+
+        # Extract per-group weight slices from the dense weight matrix
+        # dense weight shape: (hidden_size, 30)
+        dense_w = model.first_layer.weight.data.clone()
+        dense_b = model.first_layer.bias.data.clone()
+
+        # Manually compute the per-group forward pass (old approach)
+        batch = 16
+        input_groups = []
+        offset = 0
+        for dim in input_group_dims:
+            input_groups.append(torch.randn(batch, dim))
+            offset += dim
+
+        # Old approach: sum of per-group matmuls
+        old_out = torch.zeros(batch, hidden_size)
+        col = 0
+        for inp, dim in zip(input_groups, input_group_dims):
+            w_group = dense_w[:, col : col + dim]  # (hidden_size, dim)
+            old_out = old_out + inp @ w_group.t()
+            col += dim
+        old_out = torch.relu(old_out + dense_b)
+
+        # New approach: concat then single matmul
+        x_cat = torch.cat(input_groups, dim=-1)  # (batch, 30)
+        new_out = torch.relu(x_cat @ dense_w.t() + dense_b)
+
+        assert torch.allclose(old_out, new_out, atol=1e-6), (
+            f"Max diff: {(old_out - new_out).abs().max().item()}"
+        )
+
+        # Also verify through the full model forward pass
+        model.eval()
+        with torch.no_grad():
+            full_out = model(input_groups)
+
+        # Manually compute full forward with old-style first layer
+        with torch.no_grad():
+            after_hidden = torch.relu(model.hidden(old_out))
+            expected_out = model.output(after_hidden)
+
+        assert torch.allclose(full_out, expected_out, atol=1e-6), (
+            f"Full model max diff: {(full_out - expected_out).abs().max().item()}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

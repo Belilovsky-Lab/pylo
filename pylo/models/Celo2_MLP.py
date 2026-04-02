@@ -1,10 +1,10 @@
 """Celo2 MLP model for the learned optimizer.
 
-Architecture: 14 per-input-group first-layer weights -> 8 hidden (ReLU) -> 8 hidden (ReLU) -> 3 output.
+Architecture: Linear(30, 8) -> ReLU -> Linear(8, 8) -> ReLU -> Linear(8, 3).
 
-The first layer uses separate weight matrices for each input feature group,
-whose outputs are summed before adding a shared bias and applying ReLU.
-This matches the Haiku-based JAX implementation in celo2_optax.py.
+The first layer is a single dense matrix applied to the concatenation of all
+14 input feature groups (total dim = 30). This is mathematically equivalent to
+the original per-group weight approach but simpler and faster.
 """
 
 import os
@@ -35,13 +35,10 @@ class Celo2MLP(nn.Module):
 
         self.input_group_dims = input_group_dims
         self.hidden_size = hidden_size
-        self.num_groups = len(input_group_dims)
+        self.total_input_dim = sum(input_group_dims)
 
-        # First layer: separate weight matrix per input group, shared bias
-        self.first_layer_weights = nn.ParameterList(
-            [nn.Parameter(torch.zeros(hidden_size, dim)) for dim in input_group_dims]
-        )
-        self.first_layer_bias = nn.Parameter(torch.zeros(hidden_size))
+        # First layer: single dense weight applied to concatenated inputs
+        self.first_layer = nn.Linear(self.total_input_dim, hidden_size)
 
         # Hidden layer
         self.hidden = nn.Linear(hidden_size, hidden_size)
@@ -58,15 +55,11 @@ class Celo2MLP(nn.Module):
         Returns:
             Tensor of shape [..., 3] (direction, magnitude, unused).
         """
-        # First layer: sum of per-group matmuls + shared bias
-        out = torch.zeros(
-            input_groups[0].shape[:-1] + (self.hidden_size,),
-            device=input_groups[0].device,
-            dtype=input_groups[0].dtype,
-        )
-        for inp, w in zip(input_groups, self.first_layer_weights):
-            out = out + inp @ w.t()
-        out = torch.relu(out + self.first_layer_bias)
+        # Concatenate all input groups along last dim -> [..., 30]
+        x = torch.cat(input_groups, dim=-1)
+
+        # First layer
+        out = torch.relu(self.first_layer(x))
 
         # Hidden layer
         out = torch.relu(self.hidden(out))
@@ -77,8 +70,37 @@ class Celo2MLP(nn.Module):
 
     @classmethod
     def from_pretrained_file(cls, path: str) -> "Celo2MLP":
-        """Load from a converted .pt checkpoint file."""
+        """Load from a converted .pt checkpoint file.
+
+        Handles both the old per-group format (first_layer_weights.0, etc.)
+        and the new dense format (first_layer.weight).
+        """
         state_dict = torch.load(path, map_location="cpu", weights_only=True)
+
+        # Convert old per-group format to dense format if needed
+        if "first_layer_weights.0" in state_dict:
+            state_dict = _convert_grouped_to_dense(state_dict)
+
         model = cls()
         model.load_state_dict(state_dict)
         return model
+
+
+def _convert_grouped_to_dense(state_dict: dict) -> OrderedDict:
+    """Convert old per-group first_layer_weights.* keys to a single first_layer.*"""
+    new_state = OrderedDict()
+
+    # Collect and concatenate the per-group weight matrices
+    group_weights = []
+    i = 0
+    while f"first_layer_weights.{i}" in state_dict:
+        group_weights.append(state_dict.pop(f"first_layer_weights.{i}"))
+        i += 1
+
+    # Each group weight has shape (hidden_size, group_dim); cat along dim=1
+    new_state["first_layer.weight"] = torch.cat(group_weights, dim=1)
+    new_state["first_layer.bias"] = state_dict.pop("first_layer_bias")
+
+    # Copy remaining keys unchanged
+    new_state.update(state_dict)
+    return new_state

@@ -39,16 +39,16 @@ def convert_checkpoint(input_path: str, output_path: str):
 
     state_dict = OrderedDict()
 
-    # First layer: 14 per-input-group weight matrices
-    # JAX shape (in_dim, 8) -> PyTorch shape (8, in_dim)
+    # First layer: concatenate 14 per-input-group weight matrices into single dense weight
+    # JAX shape per group: (in_dim, 8) -> transposed to (8, in_dim), then cat along dim=1
+    group_weights = []
     for i in range(14):
-        jax_w = params[f"w0__{i}"]
-        state_dict[f"first_layer_weights.{i}"] = torch.tensor(
-            jax_w.T.copy(), dtype=torch.float32
-        )
+        jax_w = params[f"w0__{i}"]  # shape (group_dim, 8)
+        group_weights.append(torch.tensor(jax_w.T.copy(), dtype=torch.float32))  # (8, group_dim)
+    state_dict["first_layer.weight"] = torch.cat(group_weights, dim=1)  # (8, 30)
 
-    # First layer bias (shared)
-    state_dict["first_layer_bias"] = torch.tensor(
+    # First layer bias
+    state_dict["first_layer.bias"] = torch.tensor(
         params["b0"].copy(), dtype=torch.float32
     )
 
