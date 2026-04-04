@@ -1,20 +1,21 @@
 # CELO2 LLM Training Experiment Report
 
-**Date:** 2026-04-03  
-**Status:** Complete (both runs finished 1000 steps successfully)
+**Date:** 2026-04-04  
+**Status:** Complete — full 3B token dataset, 3000 steps, both optimizers finished
 
 ## Setup
 
 | | Value |
 |---|---|
 | **Model** | LLaMA-style, 137.8M params (16 layers, 768 hidden, 12 heads, SwiGLU, RoPE, RMSNorm) |
-| **Data** | FineWeb-Edu, 85M pre-tokenized tokens (41k sequences of 2048) |
+| **Data** | FineWeb-Edu, 3.20B pre-tokenized tokens (1.56M sequences of 2048) |
 | **Tokenizer** | Mistral-7B-v0.1 (32k vocab, BPE) |
 | **Hardware** | 4x NVIDIA RTX A6000 (48GB) per run, 2 runs in parallel |
 | **Distributed** | DDP (DistributedDataParallel) |
 | **Batch** | 128 sequences/step (4 GPU x 8 micro-batch x 4 grad_accum) |
 | **Tokens/step** | 262,144 (~0.26M) |
-| **LR schedule** | Cosine decay with 100-step linear warmup |
+| **Total steps** | 3000 (~786M tokens, 0.25 epochs) |
+| **LR schedule** | Cosine decay with 300-step linear warmup |
 | **Gradient clipping** | 1.0 (global norm) |
 | **Activation checkpointing** | Yes (per decoder layer) |
 
@@ -31,119 +32,131 @@
 
 ## Results
 
-Both runs completed the full 1000 steps successfully.
-
-### Eval Perplexity Comparison
+### Eval Perplexity Over Training
 
 | Step | CELO2 Eval PPL | AdamW Eval PPL | CELO2 Advantage |
 |------|---------------|----------------|-----------------|
-| 200 | **398.6** | — | — |
-| 400 | **230.0** | **457.9** | 2.0x lower |
-| 600 | **170.9** | — | — |
-| 800 | **141.9** | **295.4** | 2.1x lower |
-| **1000** | **126.2** | **276.4** | **2.2x lower** |
+| 500 | **211.9** | 381.9 | 1.8x lower |
+| 1000 | **162.3** | 213.6 | 1.3x lower |
+| 1500 | **146.9** | 162.7 | 1.1x lower |
+| 2000 | **140.5** | 141.9 | ~tied |
+| 2500 | **131.7** | 132.0 | ~tied |
+| 3000 | ~132 | **127.5** | AdamW 1.04x lower |
 
-### Training Loss Trajectory
-
-**CELO2 CUDA** (1000 steps, 110.1 min, 1.84 hours):
-
-| Step | Loss | PPL | LR |
-|------|------|------|-----|
-| 10 | 10.26 | 28587 | 1.0e-4 |
-| 100 | 6.83 | 923 | 1.0e-3 |
-| 200 | 6.08 | 438 | 9.7e-4 |
-| 300 | 5.76 | 316 | 9.0e-4 |
-| 400 | 5.47 | 238 | 7.8e-4 |
-| 500 | 5.34 | 209 | 6.3e-4 |
-| 600 | 5.26 | 193 | 4.7e-4 |
-| 700 | 5.07 | 159 | 3.3e-4 |
-| 800 | 5.01 | 150 | 2.1e-4 |
-| 900 | 4.99 | 147 | 1.3e-4 |
-| **1000** | **4.81** | **123** | 1.0e-4 |
-
-**AdamW** (1000 steps, 108.7 min, 1.81 hours):
-
-| Step | Loss | PPL | LR |
-|------|------|------|-----|
-| 10 | 10.13 | 25139 | 3.0e-5 |
-| 100 | — | — | — |
-| 200 | — | — | — |
-| 400 | 6.16 | 473 | 2.3e-4 |
-| 500 | 6.00 | 404 | 1.9e-4 |
-| 600 | — | — | — |
-| 700 | — | — | — |
-| 800 | 5.74 | 310 | 6.2e-5 |
-| 900 | 5.70 | 300 | 3.8e-5 |
-| **1000** | **5.64** | **282** | 3.0e-5 |
-
-### Throughput Comparison
+### Final Numbers
 
 | Metric | CELO2 CUDA | AdamW |
 |---|---|---|
-| **Total time** | 1.84 hours | 1.81 hours |
-| **Avg tokens/sec** | 39,644 | 40,128 |
-| **Step time** | ~6.57s | ~6.49s |
-| **Optimizer step** | 264ms | 17ms |
-| **Optimizer overhead** | 4.0% of step time | 0.3% of step time |
+| **Final train loss** | 4.88 | 4.93 |
+| **Final train PPL** | 132.3 | 137.8 |
+| **Final eval PPL (step 3000)** | ~132 | **127.5** |
+| **Total wall time** | **5.5 hours** | 11.0 hours |
+| **Avg throughput** | **39,884 tok/s** | 19,903 tok/s |
+| **Step time** | **6.57s** | 13.2s |
+| **Optimizer step** | 261ms | 39ms |
 
-### Key Findings
+### Training Loss Trajectory
 
-1. **CELO2 achieves 2.2x lower final eval perplexity**: At step 1000, CELO2 eval PPL is **126.2** vs AdamW's **276.4**. This advantage is consistent throughout training (2.0x at step 400, 2.1x at step 800, 2.2x at step 1000).
+**CELO2 CUDA** (3000 steps, 5.5 hours):
 
-2. **Throughput is essentially equal**: Both complete 1000 steps in ~1.8 hours (~40k tokens/sec). CELO2's optimizer step is 15x slower (264ms vs 17ms), but this is only 4% of the total step time since forward/backward with activation checkpointing dominates (~6.3s).
+| Step | Loss | PPL | LR |
+|------|------|------|-----|
+| 500 | 5.41 | 224 | 1.0e-3 |
+| 1000 | 5.15 | 173 | 9.6e-4 |
+| 1500 | 5.06 | 158 | 8.0e-4 |
+| 2000 | 4.98 | 146 | 5.5e-4 |
+| 2500 | 4.97 | 143 | 2.7e-4 |
+| 3000 | 4.88 | 132 | 1.0e-4 |
 
-3. **CELO2 converges more aggressively**: CELO2 reaches train loss 5.0 by step ~690, while AdamW never reaches this level in 1000 steps (final loss 5.64). The learned optimizer provides better per-parameter adaptation.
+**AdamW** (3000 steps, 11.0 hours):
 
-4. **Stable training**: No NaN/Inf issues, no divergence across all 1000 steps. CELO2's parameter classification (AdamW for embeddings/first/last layers, learned MLP for hidden layers) works correctly with DDP.
-
-5. **Memory**: ~13GB per GPU for both optimizers. CELO2's additional state buffers (3x momentum, RMS, factored accumulators) are manageable.
+| Step | Loss | PPL | LR |
+|------|------|------|-----|
+| 500 | 6.00 | 404 | 3.0e-4 |
+| 1000 | 5.41 | 223 | 2.6e-4 |
+| 1500 | 5.17 | 176 | 1.9e-4 |
+| 2000 | 5.02 | 151 | 1.2e-4 |
+| 2500 | 4.93 | 138 | 5.6e-5 |
+| 3000 | 4.93 | 138 | 3.0e-5 |
 
 ---
 
-## Infrastructure Notes
+## Key Findings
 
-- **Data**: HuggingFace streaming without auth was extremely slow. Pre-tokenized 85M tokens to a memmap binary file, enabling instant random-access loading.
-- **Output buffering**: `nohup` pipe buffers caused training output to flush in large batches rather than line-by-line during monitoring, but JSON logs were written correctly at completion.
-- **DDP + CELO2**: Worked seamlessly. No special handling needed beyond `set_param_names(model)` before DDP wrapping.
+### 1. CELO2 converges much faster early, AdamW catches up late
+
+CELO2 has a decisive advantage in the first ~1500 steps (1.1–1.8x lower eval PPL). By step 2000, both optimizers reach comparable perplexity. By step 3000, AdamW slightly edges ahead (eval PPL 127.5 vs ~132). This pattern is consistent with the learned optimizer being more aggressive early (higher effective LR, adaptive per-parameter rules) while AdamW benefits from its longer cosine decay schedule.
+
+### 2. CELO2 trains 2x faster in wall time
+
+Despite both running 3000 steps, CELO2 completes in **5.5 hours vs 11.0 hours** — a 2x speedup. This was unexpected since both had equal throughput (~40k tok/s) on the smaller 85M dataset. The difference on the 3B dataset appears to be related to DataLoader performance with the larger dataset and DDP synchronization patterns. CELO2 consistently runs at 6.6s/step while AdamW runs at 13.2s/step.
+
+**Note:** This throughput difference needs investigation — it may be an artifact of the experimental setup rather than a fundamental property of the optimizers. Possible causes:
+- Different DataLoader shuffling behavior across the two GPU groups
+- CUDA memory pressure differences (GPU 0 shows 19.5GB vs others at 13.2GB)
+- DDP all-reduce timing differences
+
+### 3. Both reach good perplexity for this model size
+
+Final eval PPL of 127.5–132 on FineWeb-Edu is reasonable for a 138M model trained on 786M tokens (~0.25 epochs of 3.2B). For comparison:
+- Chinchilla-optimal training would use ~2.8B tokens (20x params)
+- With only 0.25 epochs, neither optimizer has fully converged
+- Extending to 1 full epoch (12,200 steps) would likely push both below PPL 100
+
+### 4. Stable training at scale
+
+Both optimizers completed all 3000 steps without NaN/Inf or divergence. CELO2's hybrid approach (learned MLP for hidden layers, AdamW for input/output/1D) works correctly with DDP on 4 GPUs.
+
+---
+
+## Throughput Comparison
+
+| Metric | CELO2 CUDA | AdamW |
+|---|---|---|
+| **Avg tokens/sec** | 39,884 | 19,903 |
+| **Step time** | 6.57s | 13.2s |
+| **Optimizer step** | 261ms (4.0% of step) | 39ms (0.3% of step) |
+| **Forward+backward** | ~6.3s | ~13.1s |
 
 ---
 
 ## Comparison at Same Wall Time
 
-Both optimizers ran at nearly identical throughput (~40k tok/s), so step counts map directly to wall time:
-
-| Wall Time | CELO2 Step / PPL | AdamW Step / PPL |
+| Wall Time | CELO2 (step / eval PPL) | AdamW (step / eval PPL) |
 |---|---|---|
-| ~45 min | step 400 / **238** | step 400 / **473** |
-| ~88 min | step 800 / **150** | step 800 / **310** |
-| ~109 min | step 1000 / **123** | step 1000 / **282** |
+| 5.5 hours | step 3000 / **~132** | step ~1500 / **162.7** |
+| 11 hours | — | step 3000 / **127.5** |
 
-CELO2 achieves **2.0–2.3x lower perplexity** at every point in training.
+At the same wall time (5.5h), CELO2 achieves eval PPL ~132 while AdamW is only at PPL 162.7. CELO2 would need no further training; AdamW needs another 5.5 hours to finish.
 
 ---
 
-## Conclusion
+## Previous Experiment (85M tokens, for reference)
 
-CELO2 CUDA demonstrates strong performance on LLM pretraining:
+On the smaller dataset (85M tokens, 1000 steps), CELO2 showed a much larger advantage:
 
-- **2x better perplexity** than AdamW at matched steps or wall time
-- **Zero throughput penalty** — optimizer overhead is negligible vs forward/backward
-- **Stable and production-ready** for DDP multi-GPU training
+| | CELO2 | AdamW |
+|---|---|---|
+| Eval PPL @ 1000 | **126.2** | 276.4 |
+| Throughput | 39.6k tok/s | 40.1k tok/s |
 
-The learned optimizer's ability to adapt per-parameter update rules provides a clear advantage over fixed-rule AdamW, especially in the early-to-mid training phase where CELO2 descends much more aggressively.
+The smaller dataset caused more overfitting (3+ epochs), which CELO2 handled better. With the larger 3B dataset (0.25 epochs), both optimizers converge to similar final quality but CELO2 gets there faster.
 
-### Limitations
+---
 
-- Small dataset (85M tokens, ~3 epochs over 1000 steps) means later steps are retraining on seen data — eval loss may be optimistic
-- Single LR per optimizer — did not sweep LR for either (CELO2 at 1e-3, AdamW at 3e-4)
-- AdamW LR may be suboptimal; a higher LR could close the gap
+## Limitations
 
-### Next Steps
+- Did not sweep LR for either optimizer — CELO2 at 1e-3, AdamW at 3e-4
+- Only 0.25 epochs of the 3.2B dataset — both optimizers have room to improve
+- Throughput difference (2x) needs investigation — may be experimental artifact
+- CELO2 eval at step 3000 was captured from training logs (deleted file), not the JSON
 
-- Scale to larger dataset (pre-download FineWeb with HF auth, target 3B tokens)
-- LR sweep for both optimizers for fair comparison
+## Next Steps
+
+- Investigate the 2x throughput difference between CELO2 and AdamW runs
+- LR sweep for both optimizers
+- Train for full epoch (12,200 steps) to see final convergence
 - Test at 350M and 1B+ parameter scales
-- Compare with CELO2 naive to verify CUDA kernel produces identical training dynamics
 
 ---
 
@@ -153,14 +166,14 @@ The learned optimizer's ability to adapt per-parameter update rules provides a c
 # Build CUDA extensions
 python setup.py install --cuda
 
-# Pre-tokenize data (outputs/llm-fineweb/data/train_tokens.bin)
-# Then run:
+# Pre-tokenize 3B tokens (requires HF auth for speed)
+# Cached at outputs/llm-fineweb/data/train_tokens_3B.bin
 
 # CELO2 CUDA (4 GPUs):
 torchrun --nproc_per_node=4 examples/llm-fineweb/train_llama.py \
-    --optimizer celo2_cuda --max_steps 1000 --batch_size 8 --grad_accum_steps 4
+    --optimizer celo2_cuda --max_steps 3000 --batch_size 8 --grad_accum_steps 4 --warmup_steps 300
 
 # AdamW baseline (4 GPUs):
 torchrun --nproc_per_node=4 examples/llm-fineweb/train_llama.py \
-    --optimizer adamw --max_steps 1000 --batch_size 8 --grad_accum_steps 4
+    --optimizer adamw --max_steps 3000 --batch_size 8 --grad_accum_steps 4 --warmup_steps 300
 ```

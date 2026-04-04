@@ -128,11 +128,11 @@ class MemmapTokenDataset(torch.utils.data.Dataset):
         }
 
 
-def prepare_data(config: TrainConfig, tokenizer, target_tokens: int = 800_000_000):
+def prepare_data(config: TrainConfig, tokenizer, target_tokens: int = 3_200_000_000):
     """Pre-tokenize FineWeb to a memmap file. Only runs on rank 0."""
     data_dir = Path(config.output_dir) / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    data_path = data_dir / "train_tokens.bin"
+    data_path = data_dir / "train_tokens_3B.bin"
 
     if data_path.exists():
         tokens = np.memmap(str(data_path), dtype=np.uint16, mode="r")
@@ -300,7 +300,7 @@ def train(config: TrainConfig):
     if distributed:
         dist.barrier()
     if not is_main:
-        data_path = str(Path(config.output_dir) / "data" / "train_tokens.bin")
+        data_path = str(Path(config.output_dir) / "data" / "train_tokens_3B.bin")
 
     train_dataset = MemmapTokenDataset(data_path, config.seq_length, rank=rank, world_size=world_size)
     if is_main:
