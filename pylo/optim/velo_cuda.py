@@ -13,6 +13,17 @@ from collections import OrderedDict
 import velo_cuda_kernel
 import time
 
+# VeLO's LSTM feature function is compiled per-parameter-shape with
+# @torch.compile. The default TorchDynamo cache size limit (8) is easily
+# exceeded for real models and emits noisy recompilation warnings. Bump
+# it here so users don't have to set it themselves.
+try:
+    import torch._dynamo
+    if getattr(torch._dynamo.config, "cache_size_limit", 0) < 64:
+        torch._dynamo.config.cache_size_limit = 64
+except Exception:
+    pass
+
 from pylo.models.VeLO_MLP import VeLOMLP
 from pylo.models.VeLO_RNN import VeLORNN
 
