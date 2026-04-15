@@ -1,0 +1,23 @@
+# Pinned runtime environment used for the paper's A100 80GB benchmarks
+# (MLSys 2026 artifact evaluation). Match your CUDA Toolkit (nvcc) to the
+# PyTorch CUDA build: the pinned torch==2.6.0+cu118 wheel below expects
+# CUDA 11.8. See README.md for install instructions.
+#
+# Install with:
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
+
+torch==2.6.0+cu118
+torchvision==0.21.0+cu118
+torchaudio==2.6.0+cu118
+
+# Build-time dependency for the CUDA extensions (pybind11.h).
+pybind11>=2.10
+
+# Core runtime dependencies used by pylo itself.
+huggingface_hub>=0.23
+safetensors==0.4.5
+mup==1.0.0
+numpy>=1.24
+
+# Optional but required by some example scripts / tests in this repo.
+timm==1.0.26

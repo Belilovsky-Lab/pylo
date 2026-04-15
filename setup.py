@@ -1,21 +1,24 @@
 from setuptools import setup, find_packages
+import os
 import sys
 
 
 def get_build_config():
-    # Parse config settings from --config-settings
-    # pip passes config settings as --config-settings="--build-option=--cuda"
-    cuda_setting = False
+    # Enable CUDA extension builds via one of:
+    #   1. Environment variable PYLO_CUDA=1 (preferred; works with every
+    #      PEP-517 frontend incl. `pip install .`)
+    #   2. `--cuda` on the setup.py command line (legacy)
+    #   3. `--build-option=--cuda` via pip's --config-settings (legacy)
+    if os.environ.get("PYLO_CUDA", "").lower() in ("1", "true", "yes", "on"):
+        return True
     for arg in sys.argv:
         if arg.startswith('--build-option=--cuda'):
-            cuda_setting = True
             sys.argv.remove(arg)
-            break
-        elif arg == '--cuda':  # For direct python setup.py install
-            cuda_setting = True
+            return True
+        elif arg == '--cuda':
             sys.argv.remove(arg)
-            break
-    return cuda_setting
+            return True
+    return False
 
 # Check build configuration
 enable_cuda = get_build_config()
@@ -81,6 +84,10 @@ setup(
         "huggingface_hub",
         "safetensors==0.4.5",
         "mup==1.0.0",
+        # pybind11 is required as a build/runtime header source for the
+        # CUDA extensions; listing it here avoids the `pybind11.h: No such
+        # file or directory` failure reviewer #49D6d reported on A100.
+        "pybind11>=2.10",
     ],
     author="Paul Janson",
     description="A package for Pylo project",

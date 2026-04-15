@@ -13,6 +13,17 @@ from collections import OrderedDict
 import velo_cuda_kernel
 import time
 
+# VeLO's LSTM feature function is compiled per-parameter-shape with
+# @torch.compile. The default TorchDynamo cache size limit (8) is easily
+# exceeded for real models and emits noisy recompilation warnings. Bump
+# it here so users don't have to set it themselves.
+try:
+    import torch._dynamo
+    if getattr(torch._dynamo.config, "cache_size_limit", 0) < 64:
+        torch._dynamo.config.cache_size_limit = 64
+except Exception:
+    pass
+
 from pylo.models.VeLO_MLP import VeLOMLP
 from pylo.models.VeLO_RNN import VeLORNN
 
@@ -688,8 +699,14 @@ class VeLO_CUDA(Optimizer):
             fac_vec_col = state["fac_vec_col"]
 
             # Calculate row_factor: safe_rsqrt(fac_vec_row / row_col_mean)
-            # adjusted indices for leading dimension
-            reduced_d1 = (d1 + 1) - 1 if (d1 + 1) > (d0 + 1) else (d1 + 1)
+            # fac_vec_row has shape (3, *p.shape with dim dr squished
+            # to 1); `d1` is the original parameter axis we want to
+            # reduce over, so its position inside fac_vec_row is
+            # always d1 + 1 (shifted by the leading decay axis). The
+            # previous conditional form picked the wrong axis
+            # whenever d1 > d0, which silently reduced over a
+            # still-present size-1 slot and made row_factor ≈ 1.
+            reduced_d1 = d1 + 1
             row_col_mean = torch.mean(fac_vec_row, dim=reduced_d1, keepdim=True)
             row_factor = safe_rsqrt(fac_vec_row / (row_col_mean + 1e-9))
             col_factor = safe_rsqrt(fac_vec_col)
