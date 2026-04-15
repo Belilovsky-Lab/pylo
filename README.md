@@ -26,19 +26,49 @@ pip install git+https://github.com/Belilovsky-Lab/pylo
 
 
 ### Build from source (Fast, with custom CUDA kernels)
-Cuda must be installed for the build to succeed. Users must set the `CUDA_HOME` environment variable before installing the kernels. CUDA version of pytorch should match the nvcc version.
+
+The CUDA Toolkit must be installed and visible through `CUDA_HOME`. The
+CUDA version of your PyTorch wheel must match the `nvcc` version on
+`PATH`. The paper's benchmarks used Python 3.11, PyTorch 2.6.0+cu118
+and CUDA 11.8 on an A100-SXM4-80GB; a matching pinned environment is
+provided in `requirements.txt`.
+
 ```bash
 git clone https://github.com/Belilovsky-Lab/pylo
 cd pylo
-pip install .
-python setup.py install --cuda # or try pip install --no-build-isolation --config-settings="--build-option=--cuda" .
+
+# (Recommended) install the pinned environment that matches the paper:
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
+
+# Then install pylo with the fused CUDA kernels. PYLO_CUDA=1 is the
+# supported way to request the CUDA build; the legacy
+# `python setup.py install --cuda` invocation is deprecated by modern
+# setuptools and may silently fall through to easy_install without
+# compiling the kernels.
+PYLO_CUDA=1 pip install --no-build-isolation .
 ```
+
+If you omit `--no-build-isolation`, pip will build in an isolated
+environment that does not have your system PyTorch installed, and the
+CUDA extension build will fail.
 
 #### Installation of MuP patch (After installing library)
 
 ```bash
 python -m pylo.util.patch_mup
 ```
+
+#### Troubleshooting
+
+- `pybind11.h: No such file or directory` — install `pybind11` (now
+  listed in `requirements.txt` / `install_requires`), or export
+  `CPLUS_INCLUDE_PATH` to include `$(python -m pybind11 --includes | sed 's/-I//g')`.
+- `libc10.so: cannot open shared object file` when importing the CUDA
+  extensions — make sure `import torch` runs before any
+  `import pylo` / `import velo_cuda_kernel` / `import cuda_lo`, so the
+  PyTorch runtime libraries are loaded first. `pylo` itself already
+  imports torch at package load; the caveat only matters if you import
+  the raw extension modules directly.
 
 ## Quick Start
 
@@ -75,6 +105,22 @@ meta_model.push_to_hub("username/model-name")
 # Load a learned optimizer from Hugging Face Hub
 from pylo import MetaMLP
 meta_model = MetaMLP.from_pretrained("username/model-name")
+```
+
+## Reproducing paper benchmarks
+
+The step-time numbers in Table 2 (ViT-B/16, batch size 32) assume TF32
+matmul is enabled. Without it, the forward/backward path on A100 is
+roughly 5× slower than reported. Enable TF32 at the top of any
+benchmarking script:
+
+```python
+import torch
+torch.set_float32_matmul_precision("high")
+# Optional: raise the TorchDynamo cache limit to silence VeLO's
+# per-parameter-shape recompilation warnings. pylo.optim.velo_cuda
+# does this automatically on import, but you can also set it yourself:
+torch._dynamo.config.cache_size_limit = 64
 ```
 
 ## Examples

@@ -93,6 +93,32 @@ __device__ void populate_velo_features(
     const int row_idx = vector_like ? idx : (idx / row_stride) % num_rows;
     const int col_idx = vector_like ? idx : (idx / col_stride) % num_cols;
 
+    // Compute the correct flat index into `fac_vec_row` / `row_factor`
+    // (shape = (3, *p.shape with dim dr squished to 1)) and
+    // `fac_vec_col` / `col_factor` (shape = (3, *p.shape with dim dc
+    // squished to 1)). For rank ≤ 2 these collapse to the previous
+    // `col_idx + k*num_cols` / `row_idx + k*num_rows` forms; the
+    // difference only appears when the parameter has another axis
+    // between the decay axis and the reduced axis (conv weights, QKV,
+    // etc.).
+    //
+    // `stride_row` is the number of elements in a single decay slice
+    // of fac_vec_row; `ofs_row` is the offset of element `idx` within
+    // that slice (i.e. `idx` with its dr coordinate zeroed and its
+    // layout compressed by `num_rows`). Same for the col side.
+    int stride_row, stride_col, ofs_row, ofs_col;
+    if (vector_like) {
+        stride_row = n_elements;
+        stride_col = n_elements;
+        ofs_row    = idx;
+        ofs_col    = idx;
+    } else {
+        stride_row = n_elements / num_rows;
+        stride_col = n_elements / num_cols;
+        ofs_row    = (idx / (num_rows * row_stride)) * row_stride + (idx % row_stride);
+        ofs_col    = (idx / (num_cols * col_stride)) * col_stride + (idx % col_stride);
+    }
+
 
     features[0] = grad[idx];
     features[1] = fminf(fmaxf(grad[idx], -0.1), 0.1); // Clipped gradient
@@ -106,25 +132,25 @@ __device__ void populate_velo_features(
     features[8] = features[4] * features[10]; // normalized gradient
     features[9] = features[5] * features[10]; // normalized momentum
 
-    T tmp_row_factor1 = row_factor[col_idx];
-    T tmp_row_factor2 = row_factor[col_idx + num_cols];
-    T tmp_row_factor3 = row_factor[col_idx + 2 * num_cols];
+    T tmp_row_factor1 = row_factor[ofs_row];
+    T tmp_row_factor2 = row_factor[ofs_row +     stride_row];
+    T tmp_row_factor3 = row_factor[ofs_row + 2 * stride_row];
 
-    T tmp_col_factor1 = col_factor[row_idx];
-    T tmp_col_factor2 = col_factor[row_idx + num_rows];
-    T tmp_col_factor3 = col_factor[row_idx + 2 * num_rows];
+    T tmp_col_factor1 = col_factor[ofs_col];
+    T tmp_col_factor2 = col_factor[ofs_col +     stride_col];
+    T tmp_col_factor3 = col_factor[ofs_col + 2 * stride_col];
 
     features[11] = tmp_row_factor1  * (vector_like ? static_cast<T>(1) : tmp_col_factor1) * features[0];
     features[12] = tmp_row_factor2  * (vector_like ? static_cast<T>(1) : tmp_col_factor2) * features[0];
     features[13] = tmp_row_factor3  * (vector_like ? static_cast<T>(1) : tmp_col_factor3) * features[0];
 
     features[14] = features[0] *  features[10]; // normalized gradient
-    features[15] = fac_vec_row[col_idx];
-    features[16] = fac_vec_row[col_idx + num_cols];
-    features[17] = fac_vec_row[col_idx + 2 * num_cols];
-    features[18] = fac_vec_col[row_idx];
-    features[19] = fac_vec_col[row_idx + num_rows];
-    features[20] = fac_vec_col[row_idx + 2 * num_rows];
+    features[15] = fac_vec_row[ofs_row];
+    features[16] = fac_vec_row[ofs_row +     stride_row];
+    features[17] = fac_vec_row[ofs_row + 2 * stride_row];
+    features[18] = fac_vec_col[ofs_col];
+    features[19] = fac_vec_col[ofs_col +     stride_col];
+    features[20] = fac_vec_col[ofs_col + 2 * stride_col];
     features[21] = __frsqrt_rn(features[15] + 1e-8f); // rsqrt of fac_vec_row[0]
     features[22] = __frsqrt_rn(features[16] + 1e-8f); // rsqrt of fac_vec_row[1]
     features[23] = __frsqrt_rn(features[17] + 1e-8f); // rsqrt
