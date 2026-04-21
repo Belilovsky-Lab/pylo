@@ -1,6 +1,6 @@
 <div align="center">
     
-# PyLO: Learned Optimization for PyTorch [MlSys 2026]
+# PyLO: Learned Optimization for PyTorch [MLSys 2026]
 
 [![arXiv](https://img.shields.io/badge/arXiv-2410.06511-b31b1b.svg)](https://arxiv.org/abs/2506.10315)
 [![forum](https://img.shields.io/badge/PyLO-Docs-green.svg)](https://belilovsky-lab.github.io/pylo/)
