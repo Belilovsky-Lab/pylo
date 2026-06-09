@@ -5,9 +5,14 @@ __all__ = [
     "MetaMLP",
     "VeLOMLP",
     "VeLORNN",
+    "CELO2MLP",
     "AdafacLO_naive",
     "MuLO_naive",
     "VeLO_naive",
+    "CELO2_naive",
+    "ELO_CELO2_naive",
+    "CELO2",
+    "ELO_CELO2",
     # Default aliases (re-exported from pylo.optim). These resolve to the
     # CUDA implementations when available, falling back to the naive ones
     # otherwise, so downstream code can simply `from pylo import VeLO`.
