@@ -192,6 +192,13 @@ class CELO2_naive(Optimizer):
             )
         self.network = self.network.to(self.device)
 
+        # LR-schedule iteration offset. The standalone Celo2LOpt drives its
+        # schedule through an optax chain whose step count starts at 0, so the
+        # first update uses schedule(0); ELO-CELO2 instead evaluates the
+        # schedule at iteration+1 (1-indexed). CELO2 therefore offsets the
+        # 1-indexed step counter by 1; ELO_CELO2_naive overrides this to 0.
+        self._lr_offset = 1
+
     # ---------------------------------------------------------------- helpers
     def _lr_schedule(self, step, group):
         """Warmup + cosine decay learning rate (matches the JAX schedule)."""
@@ -333,7 +340,9 @@ class CELO2_naive(Optimizer):
         for group in self.param_groups:
             group["step"] = group.get("step", 0) + 1
             t = group["step"]
-            lr = self._lr_schedule(t, group)
+            # Schedule index follows the reference (0-indexed for CELO2 via
+            # _lr_offset=1); AdamW bias correction stays 1-indexed (uses t).
+            lr = self._lr_schedule(t - self._lr_offset, group)
             adam_lr = group["adam_lr_mult"] * lr
             beta1 = float(self.initial_momentum_decays[0])
             beta2 = float(self.initial_rms_decays[-1])

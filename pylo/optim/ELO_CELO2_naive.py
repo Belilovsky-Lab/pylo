@@ -88,3 +88,6 @@ class ELO_CELO2_naive(CELO2_naive):
             checkpoint_path=checkpoint_path,
             network=network,
         )
+        # ELO-CELO2 evaluates the LR schedule at iteration+1 (1-indexed),
+        # unlike the standalone CELO2 which is 0-indexed via the optax chain.
+        self._lr_offset = 0
