@@ -11,8 +11,10 @@ __all__ = [
     "VeLO_naive",
     "CELO2_naive",
     "ELO_CELO2_naive",
+    "ELO_naive",
     "CELO2",
     "ELO_CELO2",
+    "ELO",
     # Default aliases (re-exported from pylo.optim). These resolve to the
     # CUDA implementations when available, falling back to the naive ones
     # otherwise, so downstream code can simply `from pylo import VeLO`.
