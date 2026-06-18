@@ -17,6 +17,9 @@ PyLO provides efficient PyTorch implementations of cutting-edge learned optimize
 - **PyTorch-native API** designed for simplicity and familiarity
 - **Hugging Face integration** for sharing and loading meta-models
 
+Learned optimizers:
+* ELO series: [https://arxiv.org/abs/2506.10315](https://arxiv.org/abs/2506.10315)
+
 # Installation
 
 ### Via URL (slow, no Kernels)
@@ -88,6 +91,26 @@ for epoch in range(10):
     loss = loss_fn(model(input), target)
     loss.backward()
     optimizer.step(loss) # pass the loss 
+```
+
+Taking `ELO-CELO2` (the strongest LO) for example.
+
+```python
+import torch
+from pylo.optim import ELO_CELO2_CUDA
+
+model = torch.nn.Linear(10, 2)
+
+num_steps = 1000  # total optimization steps (used for the LR schedule)
+
+# Meta-learned weights download automatically from the Hugging Face Hub on first use.
+optimizer = ELO_CELO2_CUDA(model.parameters(), num_steps=num_steps, peak_lr=3.16e-4, end_lr=3.16e-5, weight_decay=0.1, adam_lr_mult=20)
+
+for step in range(num_steps):
+    optimizer.zero_grad()
+    loss = loss_fn(model(input), target)
+    loss.backward()
+    optimizer.step()
 ```
 
 ## Sharing Learned Optimizers
