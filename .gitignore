@@ -9,3 +9,5 @@ mup
 _build
 dist
 snippets
+# Learned-optimizer checkpoints (hosted on the Hugging Face Hub)
+*.pickle

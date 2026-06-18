@@ -15,9 +15,9 @@ __all__ = [
     "ELO_naive",
 ]
 
-# CELO2 / ELO-CELO2 currently ship a naive (pure-PyTorch) implementation only.
-# Expose the bare public aliases now; if a CUDA build is added later these can be
-# overridden in the try-block below, mirroring VeLO / AdafacLO.
+# CELO2 / ELO-CELO2 default to the naive (pure-PyTorch) implementation; the
+# dedicated try-block below overrides these to the CUDA variants when the
+# celo2_cuda_kernel extension is available (mirroring VeLO / AdafacLO).
 CELO2 = CELO2_naive
 ELO_CELO2 = ELO_CELO2_naive
 ELO = ELO_naive
@@ -51,3 +51,16 @@ except ImportError:
     AdafacLO = AdafacLO_naive
     MuLO = MuLO_naive
     __all__.extend(["VeLO", "AdafacLO", "MuLO"])
+
+# CELO2 / ELO-CELO2 CUDA are wired independently: they only need the
+# celo2_cuda_kernel extension, so a missing/failed build here leaves the other
+# CUDA optimizers (and the naive CELO2 fallback set above) untouched.
+try:
+    from pylo.optim.CELO2_cuda import CELO2_CUDA
+    from pylo.optim.ELO_CELO2_cuda import ELO_CELO2_CUDA
+
+    CELO2 = CELO2_CUDA
+    ELO_CELO2 = ELO_CELO2_CUDA
+    __all__.extend(["CELO2_CUDA", "ELO_CELO2_CUDA"])
+except ImportError:
+    pass  # keep the naive CELO2 / ELO_CELO2 aliases set above
