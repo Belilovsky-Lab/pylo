@@ -6,17 +6,19 @@ second-moment normalization, and the split-input MLP inference -- is done by the
 ``celo2_cuda_kernel.celo2_kernel`` CUDA extension. Everything that is cheap or
 matrix-shaped stays in Python and is shared verbatim with the naive optimizer:
 
-  * the warmup + cosine LR schedule (``CELO2_naive._lr_schedule``),
   * global-norm gradient clipping,
   * Newton-Schulz orthogonalization of the 2D+ update,
   * the post-MLP second-moment normalization + rmsmult scaling, and
-  * the inline AdamW branch for 1D / embedding parameters.
+  * the independent AdamW branch for 1D / embedding parameters.
 
 The kernel only computes the *raw* per-element step
 ``direction * exp(magnitude * exp_mult)``; it deliberately does not touch the
 parameter, so the Python side can orthogonalize/normalize/apply exactly as the
-naive code does. Correctness is checked against the (JAX-aligned) naive optimizer
-in ``tests/test_celo2_cuda.py``.
+naive code does. Correctness is checked against the naive optimizer in
+``tests/test_celo2_cuda.py``.
+
+No learning-rate schedule is built in: ``lr`` is used as-is, so an external
+``torch.optim.lr_scheduler`` can drive the schedule.
 
 Layout: accumulators use the *leading* decay axis ``(n_decay,) + shape`` expected
 by the kernel (the naive optimizer uses a trailing axis); the factored
@@ -30,7 +32,6 @@ i.e. 30 -> 8 -> 8 -> 3) is supported by the hardcoded kernel.
 
 from typing import Optional
 
-import numpy as np
 import torch
 from torch.optim import Optimizer
 
@@ -54,24 +55,21 @@ class CELO2_CUDA(Optimizer):
     """CUDA CELO2 learned optimizer. Drop-in for :class:`CELO2_naive`.
 
     The constructor signature mirrors :class:`CELO2_naive`. See that class for a
-    description of the hyper-parameters.
+    description of the hyper-parameters. Like the naive optimizer, the AdamW
+    branch for 1D / embedding parameters maintains independent moments.
     """
 
     def __init__(
         self,
         params,
-        num_steps,
-        # LR schedule
-        init_lr=0.0,
-        peak_lr=1e-3,
-        warmup_steps=0,
-        warmup_fraction=0.05,
-        end_lr=0.0,
+        lr=1e-3,
         # Weight decay
         weight_decay=0.0,
-        # AdamW for 1D params
+        # AdamW for 1D / embedding params (independent accumulators)
         adam_lr_mult=1.0,
         adam_weight_decay=None,
+        adam_betas=(0.9, 0.95),
+        adam_eps=1e-8,
         use_adamw_for_1d=True,
         # CELO2 backbone
         orthogonalize=True,
@@ -94,20 +92,13 @@ class CELO2_CUDA(Optimizer):
         checkpoint_path: Optional[str] = None,
         network: Optional[CELO2MLP] = None,
     ):
-        if num_steps is None:
-            raise ValueError("CELO2_CUDA requires num_steps for the LR schedule.")
         if not torch.cuda.is_available():
             raise RuntimeError("CELO2_CUDA requires a CUDA device.")
 
         self.device = torch.device("cuda")
 
         defaults = dict(
-            num_steps=num_steps,
-            init_lr=init_lr,
-            peak_lr=peak_lr,
-            warmup_steps=warmup_steps,
-            warmup_fraction=warmup_fraction,
-            end_lr=end_lr,
+            lr=lr,
             weight_decay=weight_decay,
             adam_lr_mult=adam_lr_mult,
             adam_weight_decay=(
@@ -141,6 +132,8 @@ class CELO2_CUDA(Optimizer):
         self.n_mom = self.beta_m.shape[-1]
         self.n_rms = self.beta_rms.shape[-1]
         self.n_fac = self.beta_fac.shape[-1]
+        self.adam_beta1, self.adam_beta2 = (float(b) for b in adam_betas)
+        self.adam_eps = adam_eps
         self.ns_coeffs = tuple(float(c) for c in ns_coeffs)
         self.ns_iters = ns_iters
         self.ns_eps = ns_eps
@@ -183,26 +176,7 @@ class CELO2_CUDA(Optimizer):
         self.w_out = self.network.dense_w[1].detach().contiguous()
         self.b_out = self.network.dense_b[1].detach().contiguous()
 
-        # CELO2 offsets the 1-indexed step counter by 1 (schedule(0) on first step);
-        # ELO_CELO2_CUDA overrides this to 0.
-        self._lr_offset = 1
-
     # ---------------------------------------------------------------- helpers
-    def _lr_schedule(self, step, group):
-        """Warmup + cosine decay learning rate (identical to CELO2_naive)."""
-        num_steps = group["num_steps"]
-        warmup = group["warmup_steps"]
-        if group["warmup_fraction"] > 0:
-            warmup = group["warmup_fraction"] * num_steps
-        warmup_f = max(float(warmup), 1.0)
-        decay_f = max(float(num_steps), 1.0)
-        step = float(step)
-        peak_lr, init_lr, end_lr = group["peak_lr"], group["init_lr"], group["end_lr"]
-        if step < warmup_f:
-            return init_lr + (peak_lr - init_lr) * min(step / warmup_f, 1.0)
-        progress = min(max((step - warmup_f) / max(decay_f - warmup_f, 1.0), 0.0), 1.0)
-        return end_lr + (peak_lr - end_lr) * 0.5 * (1.0 + np.cos(np.pi * progress))
-
     def _global_grad_scale(self, clip_norm):
         total = torch.zeros((), device=self.device)
         for group in self.param_groups:
@@ -214,7 +188,7 @@ class CELO2_CUDA(Optimizer):
         return (clip_norm / denom).item() if denom > 0 else 1.0
 
     # ----------------------------------------------------- accumulator update
-    def _init_state(self, state, p):
+    def _init_celo2_state(self, state, p):
         shape = tuple(p.shape)
         state["mom"] = torch.zeros((self.n_mom,) + shape, device=self.device)
         state["rms"] = torch.zeros(shape, device=self.device)
@@ -257,6 +231,27 @@ class CELO2_CUDA(Optimizer):
         col_factor = safe_rsqrt(fac_c)
         return fac_r, fac_c, row_factor, col_factor, dc, dr
 
+    def _adamw_step(self, p, grad, state, lr, weight_decay):
+        """Independent AdamW update (own exp_avg / exp_avg_sq moments)."""
+        if "exp_avg" not in state:
+            state["exp_avg"] = torch.zeros_like(p)
+            state["exp_avg_sq"] = torch.zeros_like(p)
+            state["adam_step"] = 0
+
+        state["adam_step"] += 1
+        t = state["adam_step"]
+        beta1, beta2 = self.adam_beta1, self.adam_beta2
+
+        exp_avg = state["exp_avg"]
+        exp_avg_sq = state["exp_avg_sq"]
+        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+        m_bc = exp_avg / (1.0 - beta1 ** t)
+        v_bc = exp_avg_sq / (1.0 - beta2 ** t)
+        adam_step = m_bc / (torch.sqrt(v_bc) + self.adam_eps)
+        p.add_(adam_step + weight_decay * p, alpha=-lr)
+
     # ------------------------------------------------------------------ step
     @torch.no_grad()
     def step(self, loss=None):
@@ -266,12 +261,8 @@ class CELO2_CUDA(Optimizer):
                 grad_scales[id(group)] = self._global_grad_scale(group["clip_norm"])
 
         for group in self.param_groups:
-            group["step"] = group.get("step", 0) + 1
-            t = group["step"]
-            lr = self._lr_schedule(t - self._lr_offset, group)
+            lr = group["lr"]
             adam_lr = group["adam_lr_mult"] * lr
-            beta1 = float(self.beta_m[0])
-            beta2 = float(self.beta_rms[-1])
             scale = grad_scales.get(id(group), 1.0)
             clip_val = group["grad_clip_val"]
             use_adamw_for_1d = group["use_adamw_for_1d"]
@@ -294,21 +285,17 @@ class CELO2_CUDA(Optimizer):
                 grad = torch.clamp(grad, -clip_val, clip_val)
 
                 state = self.state[p]
-                if len(state) == 0:
-                    self._init_state(state, p)
-
-                m, rms = self._update_mom_rms(state, grad)
-
                 is_1d = p.dim() <= 1 or force_adam
                 if use_adamw_for_1d and is_1d:
-                    # Inline AdamW using the shared momentum[0] / rms accumulators.
-                    m_bc = m[0] / (1.0 - beta1 ** t)
-                    v_bc = rms / (1.0 - beta2 ** t)
-                    adam_step = m_bc / (torch.sqrt(v_bc) + 1e-8)
-                    p.add_(adam_step + group["adam_weight_decay"] * p, alpha=-adam_lr)
+                    self._adamw_step(
+                        p, grad, state, adam_lr, group["adam_weight_decay"]
+                    )
                     continue
 
                 # CELO2 (2D+) path: kernel computes the raw per-element step.
+                if "mom" not in state:
+                    self._init_celo2_state(state, p)
+                m, rms = self._update_mom_rms(state, grad)
                 fac_r, fac_c, row_factor, col_factor, dc, dr = self._update_factored(
                     state, grad
                 )

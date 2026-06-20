@@ -83,16 +83,20 @@ from pylo.optim import ELO_CELO2_CUDA
 
 model = torch.nn.Linear(10, 2)
 
-num_steps = 1000  # total optimization steps (used for the LR schedule)
+num_steps = 1000  # total optimization steps
 
 # Meta-learned weights download automatically from the Hugging Face Hub on first use.
-optimizer = ELO_CELO2_CUDA(model.parameters(), num_steps=num_steps, peak_lr=3.16e-4, end_lr=3.16e-5, weight_decay=0.1, adam_lr_mult=20)
+# The optimizer has no built-in LR schedule; drive it with a standard
+# torch.optim.lr_scheduler (warmup, cosine, etc.).
+optimizer = ELO_CELO2_CUDA(model.parameters(), lr=3.16e-4, weight_decay=0.1, adam_lr_mult=20)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_steps, eta_min=3.16e-5)
 
 for step in range(num_steps):
     optimizer.zero_grad()
     loss = loss_fn(model(input), target)
     loss.backward()
     optimizer.step()
+    scheduler.step()
 ```
 
 ## Sharing Learned Optimizers

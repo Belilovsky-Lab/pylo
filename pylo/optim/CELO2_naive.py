@@ -5,17 +5,25 @@ pass of the original JAX/optax CELO2 optimizer
 (``scaling_l2o/src/learned_optimizers/celo2_optax.py``,
 https://arxiv.org/abs/2602.19142).
 
-The optimizer keeps, per parameter, three families of accumulators:
+The optimizer keeps, per 2D+ parameter, three families of accumulators:
   * momentum at several decays (default ``(0.9, 0.99, 0.999)``),
   * an RMS / second-moment accumulator (default ``(0.95,)``),
   * an Adafactor-style factored second moment (default ``(0.9, 0.99, 0.999)``).
 
 For each 2D+ parameter it builds a stack of features, feeds them through the
 :class:`~pylo.models.CELO2_MLP.CELO2MLP` (split-input MLP), optionally
-orthogonalizes the resulting update via Newton-Schulz iteration, normalizes it,
-and applies it with a warmup + cosine learning-rate schedule. 1D parameters
-(biases, norms) are updated with AdamW using the shared momentum/RMS
-accumulators, matching the original implementation.
+orthogonalizes the resulting update via Newton-Schulz iteration, and normalizes
+it. 1D parameters (biases, norms) and embeddings are updated with AdamW.
+
+Unlike the original shared-accumulator design (still used by
+:class:`pylo.optim.ELO_CELO2_naive.ELO_CELO2_naive`), the AdamW branch here keeps
+its *own* ``exp_avg`` / ``exp_avg_sq`` moments, fully decoupled from the learned
+optimizer's momentum/RMS accumulators. This makes the AdamW betas/eps independent
+hyper-parameters and avoids allocating the (unused) CELO2 accumulators for 1D
+parameters.
+
+No learning-rate schedule is built in: ``lr`` is used as-is, so an external
+``torch.optim.lr_scheduler`` can drive the schedule (warmup, cosine, etc.).
 """
 
 from typing import Optional
@@ -72,15 +80,14 @@ class CELO2_naive(Optimizer):
         params: Iterable of parameters or ``param_groups``. A group may carry an
             ``is_embedding=True`` flag to force its (2D) parameters onto the
             AdamW path, mirroring the ``'embed'`` routing of the JAX version.
-        num_steps: Total number of inner training steps. Required: it defines the
-            warmup + cosine learning-rate schedule.
-        init_lr, peak_lr, warmup_steps, warmup_fraction, end_lr: Warmup + cosine
-            schedule parameters. ``warmup_fraction`` (a fraction of ``num_steps``)
-            takes priority over ``warmup_steps`` when > 0.
+        lr: Base learning rate for the CELO2 (2D+) path. No schedule is applied
+            internally; drive any warmup/cosine schedule with an external
+            ``torch.optim.lr_scheduler``.
         weight_decay: Decoupled weight decay for the CELO2 (2D+) path.
-        adam_lr_mult, adam_beta1, adam_beta2, adam_weight_decay, use_adamw_for_1d:
-            AdamW configuration for 1D parameters. ``adam_weight_decay`` defaults
-            to ``weight_decay`` when None.
+        adam_lr_mult, adam_weight_decay, adam_betas, adam_eps, use_adamw_for_1d:
+            AdamW configuration for 1D / embedding parameters. The AdamW moments
+            are maintained independently of the CELO2 accumulators.
+            ``adam_weight_decay`` defaults to ``weight_decay`` when None.
         orthogonalize: Apply Newton-Schulz orthogonalization to 2D+ updates
             (set False for the "celo2-base" variant).
         clip_grad, clip_norm: Optional global-norm gradient clipping.
@@ -97,19 +104,14 @@ class CELO2_naive(Optimizer):
     def __init__(
         self,
         params,
-        num_steps,
-        # LR schedule
-        init_lr=0.0,
-        peak_lr=1e-3,
-        warmup_steps=0,
-        warmup_fraction=0.05,
-        end_lr=0.0,
+        lr=1e-3,
         # Weight decay
         weight_decay=0.0,
-        # AdamW for 1D params (reuses momentum_decays[0] / rms_decays[-1] as betas,
-        # matching the shared-accumulator design of the JAX ELO-CELO2)
+        # AdamW for 1D / embedding params (independent accumulators)
         adam_lr_mult=1.0,
         adam_weight_decay=None,
+        adam_betas=(0.9, 0.95),
+        adam_eps=1e-8,
         use_adamw_for_1d=True,
         # CELO2 backbone
         orthogonalize=True,
@@ -132,18 +134,8 @@ class CELO2_naive(Optimizer):
         checkpoint_path: Optional[str] = None,
         network: Optional[CELO2MLP] = None,
     ):
-        if num_steps is None:
-            raise ValueError("CELO2_naive requires num_steps for the LR schedule.")
-
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
         defaults = dict(
-            num_steps=num_steps,
-            init_lr=init_lr,
-            peak_lr=peak_lr,
-            warmup_steps=warmup_steps,
-            warmup_fraction=warmup_fraction,
-            end_lr=end_lr,
+            lr=lr,
             weight_decay=weight_decay,
             adam_lr_mult=adam_lr_mult,
             adam_weight_decay=(
@@ -161,6 +153,11 @@ class CELO2_naive(Optimizer):
         )
         super().__init__(params, defaults)
 
+        # Place state / meta-network on the same device as the parameters, so
+        # CPU params on a GPU machine don't trigger device-mismatch errors.
+        first_param = next(p for g in self.param_groups for p in g["params"])
+        self.device = first_param.device.type
+
         self.initial_momentum_decays = torch.tensor(
             initial_momentum_decays, dtype=torch.float32, device=self.device
         )
@@ -170,6 +167,8 @@ class CELO2_naive(Optimizer):
         self.initial_adafactor_decays = torch.tensor(
             initial_adafactor_decays, dtype=torch.float32, device=self.device
         )
+        self.adam_beta1, self.adam_beta2 = (float(b) for b in adam_betas)
+        self.adam_eps = adam_eps
         self.ns_coeffs = tuple(float(c) for c in ns_coeffs)
         self.ns_iters = ns_iters
         self.ns_eps = ns_eps
@@ -192,29 +191,7 @@ class CELO2_naive(Optimizer):
             )
         self.network = self.network.to(self.device)
 
-        # LR-schedule iteration offset. The standalone Celo2LOpt drives its
-        # schedule through an optax chain whose step count starts at 0, so the
-        # first update uses schedule(0); ELO-CELO2 instead evaluates the
-        # schedule at iteration+1 (1-indexed). CELO2 therefore offsets the
-        # 1-indexed step counter by 1; ELO_CELO2_naive overrides this to 0.
-        self._lr_offset = 1
-
     # ---------------------------------------------------------------- helpers
-    def _lr_schedule(self, step, group):
-        """Warmup + cosine decay learning rate (matches the JAX schedule)."""
-        num_steps = group["num_steps"]
-        warmup = group["warmup_steps"]
-        if group["warmup_fraction"] > 0:
-            warmup = group["warmup_fraction"] * num_steps
-        warmup_f = max(float(warmup), 1.0)
-        decay_f = max(float(num_steps), 1.0)
-        step = float(step)
-        peak_lr, init_lr, end_lr = group["peak_lr"], group["init_lr"], group["end_lr"]
-        if step < warmup_f:
-            return init_lr + (peak_lr - init_lr) * min(step / warmup_f, 1.0)
-        progress = min(max((step - warmup_f) / max(decay_f - warmup_f, 1.0), 0.0), 1.0)
-        return end_lr + (peak_lr - end_lr) * 0.5 * (1.0 + np.cos(np.pi * progress))
-
     def _global_grad_scale(self, clip_norm):
         """optax.clip_by_global_norm scale factor over all parameter grads."""
         total = torch.zeros((), device=self.device)
@@ -225,6 +202,27 @@ class CELO2_naive(Optimizer):
         global_norm = torch.sqrt(total)
         denom = torch.clamp(global_norm, min=clip_norm)
         return (clip_norm / denom).item() if denom > 0 else 1.0
+
+    def _init_celo2_state(self, state, p_shape):
+        """Allocate the CELO2 momentum / RMS / factored accumulators."""
+        n_mom = self.initial_momentum_decays.shape[-1]
+        n_rms = self.initial_rms_decays.shape[-1]
+        n_fac = self.initial_adafactor_decays.shape[-1]
+        state["mom"] = torch.zeros(p_shape + (n_mom,), device=self.device)
+        state["rms"] = torch.zeros(p_shape + (n_rms,), device=self.device)
+        f_dims = factored_dims(p_shape)
+        if f_dims is not None:
+            d1, d0 = f_dims
+            full = p_shape + (n_fac,)
+            vr = tuple(d for i, d in enumerate(full) if i != d0)
+            vc = tuple(d for i, d in enumerate(full) if i != d1)
+            state["fac_vec_row"] = torch.zeros(vr, device=self.device)
+            state["fac_vec_col"] = torch.zeros(vc, device=self.device)
+            state["fac_vec_v"] = torch.empty(0, device=self.device)
+        else:
+            state["fac_vec_row"] = torch.empty(0, device=self.device)
+            state["fac_vec_col"] = torch.empty(0, device=self.device)
+            state["fac_vec_v"] = torch.zeros(p_shape + (n_fac,), device=self.device)
 
     def _update_accumulators(self, state, batch_g, p_shape):
         """Advance momentum, RMS and factored accumulators in place; return fac_g."""
@@ -261,6 +259,27 @@ class CELO2_naive(Optimizer):
             fac_g = g_rep * safe_rsqrt(new_v + 1e-9)
             state["fac_vec_v"] = new_v
         return mom, rms, fac_g
+
+    def _adamw_step(self, p, grad, state, lr, weight_decay):
+        """Independent AdamW update (own exp_avg / exp_avg_sq moments)."""
+        if "exp_avg" not in state:
+            state["exp_avg"] = torch.zeros_like(p)
+            state["exp_avg_sq"] = torch.zeros_like(p)
+            state["adam_step"] = 0
+
+        state["adam_step"] += 1
+        t = state["adam_step"]
+        beta1, beta2 = self.adam_beta1, self.adam_beta2
+
+        exp_avg = state["exp_avg"]
+        exp_avg_sq = state["exp_avg_sq"]
+        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+        m_bc = exp_avg / (1.0 - beta1 ** t)
+        v_bc = exp_avg_sq / (1.0 - beta2 ** t)
+        adam_step = m_bc / (torch.sqrt(v_bc) + self.adam_eps)
+        p.add_(adam_step + weight_decay * p, alpha=-lr)
 
     def _celo2_step(self, p, grad, state, group):
         """The CELO2 MLP update for a single (2D+) parameter, shape == p.shape."""
@@ -338,14 +357,8 @@ class CELO2_naive(Optimizer):
                 grad_scales[id(group)] = self._global_grad_scale(group["clip_norm"])
 
         for group in self.param_groups:
-            group["step"] = group.get("step", 0) + 1
-            t = group["step"]
-            # Schedule index follows the reference (0-indexed for CELO2 via
-            # _lr_offset=1); AdamW bias correction stays 1-indexed (uses t).
-            lr = self._lr_schedule(t - self._lr_offset, group)
+            lr = group["lr"]
             adam_lr = group["adam_lr_mult"] * lr
-            beta1 = float(self.initial_momentum_decays[0])
-            beta2 = float(self.initial_rms_decays[-1])
             scale = grad_scales.get(id(group), 1.0)
             clip_val = group["grad_clip_val"]
             use_adamw_for_1d = group["use_adamw_for_1d"]
@@ -361,41 +374,14 @@ class CELO2_naive(Optimizer):
                 p_shape = tuple(p.shape)
 
                 state = self.state[p]
-                if len(state) == 0:
-                    n_mom = self.initial_momentum_decays.shape[-1]
-                    n_rms = self.initial_rms_decays.shape[-1]
-                    n_fac = self.initial_adafactor_decays.shape[-1]
-                    state["mom"] = torch.zeros(
-                        p_shape + (n_mom,), device=self.device
-                    )
-                    state["rms"] = torch.zeros(
-                        p_shape + (n_rms,), device=self.device
-                    )
-                    f_dims = factored_dims(p_shape)
-                    if f_dims is not None:
-                        d1, d0 = f_dims
-                        full = p_shape + (n_fac,)
-                        vr = tuple(d for i, d in enumerate(full) if i != d0)
-                        vc = tuple(d for i, d in enumerate(full) if i != d1)
-                        state["fac_vec_row"] = torch.zeros(vr, device=self.device)
-                        state["fac_vec_col"] = torch.zeros(vc, device=self.device)
-                        state["fac_vec_v"] = torch.empty(0, device=self.device)
-                    else:
-                        state["fac_vec_row"] = torch.empty(0, device=self.device)
-                        state["fac_vec_col"] = torch.empty(0, device=self.device)
-                        state["fac_vec_v"] = torch.zeros(
-                            p_shape + (n_fac,), device=self.device
-                        )
-
                 is_1d = p.dim() <= 1 or force_adam
                 if use_adamw_for_1d and is_1d:
-                    batch_g = grad.unsqueeze(-1)
-                    mom, rms, _ = self._update_accumulators(state, batch_g, p_shape)
-                    m_bc = mom[..., 0] / (1.0 - beta1 ** t)
-                    v_bc = rms[..., -1] / (1.0 - beta2 ** t)
-                    adam_step = m_bc / (torch.sqrt(v_bc) + 1e-8)
-                    p.add_(adam_step + group["adam_weight_decay"] * p, alpha=-adam_lr)
+                    self._adamw_step(
+                        p, grad, state, adam_lr, group["adam_weight_decay"]
+                    )
                 else:
+                    if "mom" not in state:
+                        self._init_celo2_state(state, p_shape)
                     step = self._celo2_step(p, grad, state, group)
                     p.add_(step + group["weight_decay"] * p, alpha=-lr)
         return loss

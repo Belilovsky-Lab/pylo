@@ -15,9 +15,9 @@ from pylo.optim import CELO2_naive, ELO_CELO2_naive
 from pylo.optim.CELO2_naive import factored_dims
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SCALING_L2O = "/home/mila/h/huangx/scaling_l2o"
-LO_DIR = os.path.join(SCALING_L2O, "src/learned_optimizers")
-CELO2_OPTAX = os.path.join(LO_DIR, "celo2_optax.py")
+SCALING_L2O = os.environ.get("SCALING_L2O", "")
+LO_DIR = os.path.join(SCALING_L2O, "src/learned_optimizers") if SCALING_L2O else ""
+CELO2_OPTAX = os.path.join(LO_DIR, "celo2_optax.py") if LO_DIR else ""
 
 
 @functools.lru_cache(maxsize=1)
@@ -91,7 +91,7 @@ def test_step_runs_and_updates(optimizer_class):
     model = SmallNet().to(DEVICE)
     before = [p.clone() for p in model.parameters()]
 
-    optimizer = optimizer_class(model.parameters(), num_steps=50, peak_lr=1e-2)
+    optimizer = optimizer_class(model.parameters(), lr=1e-2)
     x = torch.randn(16, 10, device=DEVICE)
     y = torch.randn(16, 1, device=DEVICE)
 
@@ -111,7 +111,7 @@ def test_higher_rank_parameter():
     """A >2D parameter (conv-like) goes through the orthogonalization path."""
     torch.manual_seed(0)
     w = nn.Parameter(torch.randn(3, 4, 5, device=DEVICE))
-    optimizer = CELO2_naive([w], num_steps=20, peak_lr=1e-2)
+    optimizer = CELO2_naive([w], lr=1e-2)
     for _ in range(3):
         optimizer.zero_grad()
         (w.sum() ** 2).backward()
@@ -126,7 +126,7 @@ def test_celo2_resume(tmp_path):
     net = CELO2MLP().to(DEVICE)  # shared meta-model (random but fixed)
 
     model = SmallNet().to(DEVICE)
-    optimizer = CELO2_naive(model.parameters(), num_steps=50, peak_lr=1e-2, network=net)
+    optimizer = CELO2_naive(model.parameters(), lr=1e-2, network=net)
 
     x = torch.randn(32, 10, device=DEVICE)
     y = torch.randn(32, 1, device=DEVICE)
@@ -152,7 +152,7 @@ def test_celo2_resume(tmp_path):
     # Restart from checkpoint and continue.
     loaded_model = SmallNet().to(DEVICE)
     loaded_opt = CELO2_naive(
-        loaded_model.parameters(), num_steps=50, peak_lr=1e-2, network=net
+        loaded_model.parameters(), lr=1e-2, network=net
     )
     ckpt = torch.load(path)
     loaded_model.load_state_dict(ckpt["model"])
@@ -212,7 +212,7 @@ def test_jax_numerical_alignment(ortho, shape):
     model.load_state_dict(sd)
 
     p = torch.nn.Parameter(torch.tensor(np.asarray(params["w"]), dtype=torch.float32))
-    opt = CELO2_naive([p], num_steps=100, orthogonalize=ortho, network=model)
+    opt = CELO2_naive([p], orthogonalize=ortho, network=model)
     opt.device = "cpu"
     opt.initial_momentum_decays = opt.initial_momentum_decays.cpu()
     opt.initial_rms_decays = opt.initial_rms_decays.cpu()
@@ -240,11 +240,15 @@ def test_jax_numerical_alignment(ortho, shape):
 )
 @pytest.mark.parametrize("which", ["celo2", "elo_celo2"])
 def test_jax_end_to_end_alignment(which):
-    """The FULL step() (1D AdamW + warmup/cosine LR + weight decay + global-norm
-    clipping) matches the reference JAX optimizer over a multi-step trajectory.
+    """The FULL step() (1D AdamW + weight decay + global-norm clipping) matches
+    the reference JAX optimizer over a multi-step trajectory.
 
-    Uses a model with a 2D weight and a 1D bias, nonzero weight decay, and
-    enabled gradient clipping with large grads, so every code path is exercised.
+    The pylo optimizers no longer carry an internal LR schedule (it is applied
+    externally now), so we pin the JAX reference to a *constant* schedule
+    (``init_lr == peak_lr == end_lr``) and run the torch side at that same
+    constant ``lr``; the per-step math is then identical. Uses a model with a 2D
+    weight and a 1D bias, nonzero weight decay, and enabled gradient clipping
+    with large grads, so every code path is exercised.
     """
     jax = pytest.importorskip("jax")
     import jax.numpy as jnp
@@ -252,8 +256,9 @@ def test_jax_end_to_end_alignment(which):
     celo2_lopt, elo_celo2 = _load_jax_lopts()
 
     N = 60
+    LR = 1e-3
     cfg = dict(
-        init_lr=0.0, peak_lr=1e-3, warmup_fraction=0.05, end_lr=0.0,
+        init_lr=LR, peak_lr=LR, warmup_fraction=0.05, end_lr=LR,
         weight_decay=0.1, adam_lr_mult=1.0, use_adamw_for_1d=True,
         clip_grad=True, clip_norm=1.0,
     )
@@ -289,8 +294,8 @@ def test_jax_end_to_end_alignment(which):
     pw = torch.nn.Parameter(torch.tensor(W))
     pb = torch.nn.Parameter(torch.tensor(B))
     topt = topt_cls(
-        [pw, pb], num_steps=N, peak_lr=1e-3, warmup_fraction=0.05, end_lr=0.0,
-        weight_decay=0.1, clip_grad=True, clip_norm=1.0, network=net,
+        [pw, pb], lr=LR, weight_decay=0.1, clip_grad=True, clip_norm=1.0,
+        network=net,
     )
     topt.device = "cpu"
     for a in ("initial_momentum_decays", "initial_rms_decays", "initial_adafactor_decays"):

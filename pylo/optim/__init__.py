@@ -64,3 +64,13 @@ try:
     __all__.extend(["CELO2_CUDA", "ELO_CELO2_CUDA"])
 except ImportError:
     pass  # keep the naive CELO2 / ELO_CELO2 aliases set above
+
+# ELO CUDA reuses the cuda_lo kernel (shared with AdafacLO); wire it independently
+# so a failed AdafacLO_cuda import (its optional deps) doesn't disable ELO_CUDA.
+try:
+    from pylo.optim.ELO_cuda import ELO_CUDA
+
+    ELO = ELO_CUDA
+    __all__.append("ELO_CUDA")
+except ImportError:
+    pass  # keep the naive ELO alias set above

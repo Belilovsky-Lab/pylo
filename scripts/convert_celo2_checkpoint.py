@@ -23,7 +23,6 @@ Usage:
 
 import argparse
 import pickle
-import re
 
 import numpy as np
 import torch

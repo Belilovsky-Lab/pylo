@@ -53,7 +53,7 @@ def _make_grads(n_steps, seed, scale=3.0):
 
 def _run(opt_class, init_vals, grads_seq, net, **cfg):
     params = [torch.nn.Parameter(v.clone()) for v in init_vals]
-    opt = opt_class(params, num_steps=cfg.pop("num_steps", 50), network=net, **cfg)
+    opt = opt_class(params, network=net, **cfg)
     traj = []
     for grads in grads_seq:
         for p, gg in zip(params, grads):
@@ -81,8 +81,7 @@ def test_celo2_cuda_matches_naive(orthogonalize, exp_mult):
     init_vals = _make_init(seed=1)
     grads_seq = _make_grads(n_steps=50, seed=2)
     cfg = dict(
-        num_steps=100,
-        peak_lr=1e-2,
+        lr=1e-2,
         weight_decay=0.1,
         clip_grad=True,
         clip_norm=1.0,
@@ -97,14 +96,14 @@ def test_celo2_cuda_matches_naive(orthogonalize, exp_mult):
 
 
 def test_elo_celo2_cuda_matches_naive():
-    """ELO-CELO2 (different defaults + _lr_offset=0) stays aligned."""
+    """ELO-CELO2 (different defaults, shared-accumulator AdamW) stays aligned."""
     torch.manual_seed(0)
     np.random.seed(0)
     net = CELO2MLP().to(DEVICE)
 
     init_vals = _make_init(seed=3)
     grads_seq = _make_grads(n_steps=50, seed=4)
-    cfg = dict(num_steps=100, peak_lr=1e-3)
+    cfg = dict(lr=1e-3)
 
     naive_traj = _run(ELO_CELO2_naive, init_vals, grads_seq, net, **cfg)
     cuda_traj = _run(ELO_CELO2_CUDA, init_vals, grads_seq, net, **cfg)
@@ -121,7 +120,7 @@ def test_celo2_cuda_single_matrix_alignment():
     g = torch.Generator(device=DEVICE).manual_seed(7)
     init = [torch.randn(48, 24, generator=g, device=DEVICE)]
     grads = [[torch.randn(48, 24, generator=g, device=DEVICE) * 2.0] for _ in range(50)]
-    cfg = dict(num_steps=100, peak_lr=1e-2, orthogonalize=True)
+    cfg = dict(lr=1e-2, orthogonalize=True)
 
     naive_traj = _run(CELO2_naive, init, grads, net, **cfg)
     cuda_traj = _run(CELO2_CUDA, init, grads, net, **cfg)

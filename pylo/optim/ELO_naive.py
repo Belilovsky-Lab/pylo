@@ -10,17 +10,20 @@ The per-parameter features and the meta-model are identical to
 :class:`pylo.optim.AdafacLO_naive.AdafacLO_naive` / :class:`pylo.models.Meta_MLP.MetaMLP`
 (39 input features, 2 outputs). ELO differs only in:
 
-  * raw accumulator decays (no decay reparameterization),
-  * a warmup-then-constant (optionally cosine) learning-rate schedule, and
-  * the update rule ``p -= scheduled_lr * (direction * exp(magnitude * exp_mult)
-    + weight_decay * p)`` (the schedule plays the role of ``step_mult``).
+  * raw accumulator decays (no decay reparameterization), and
+  * the update rule ``p -= lr * (direction * exp(magnitude * exp_mult)
+    + weight_decay * p)``.
+
+No learning-rate schedule is built in: ``lr`` is used as-is, so an external
+``torch.optim.lr_scheduler`` can drive any warmup/cosine schedule. The optimizer
+still tracks the iteration counter, which feeds the ``tanh_embedding`` training
+step feature consumed by the meta-model.
 
 Reference: ``scaling_l2o/src/learned_optimizers/elo_adfac_mlp_lopt.py``.
 """
 
 from typing import Optional
 
-import numpy as np
 import torch
 from torch.optim import Optimizer
 
@@ -40,16 +43,11 @@ class ELO_naive(Optimizer):
 
     Args:
         params: Iterable of parameters or ``param_groups``.
-        num_steps: Total number of inner training steps (defines the warmup /
-            cosine schedule). Required.
-        exp_mult, step_mult: Magnitude exponent multiplier and base step size
-            (``step_mult`` is the post-warmup learning rate).
-        init_lr, warmup_fraction, warmup_steps: Linear warmup from ``init_lr`` to
-            ``step_mult``. ``warmup_fraction`` (fraction of ``num_steps``) takes
-            priority over ``warmup_steps`` when > 0.
-        use_lo_cosine_scheduler, step_mult_min: If enabled, cosine-decay the
-            post-warmup learning rate from ``step_mult`` down to ``step_mult_min``.
-        weight_decay: Decoupled weight decay (scaled by the schedule).
+        lr: Base learning rate (the ELO ``step_mult``). No schedule is applied
+            internally; drive any warmup/cosine schedule with an external
+            ``torch.optim.lr_scheduler``.
+        exp_mult: Magnitude exponent multiplier for the MLP output.
+        weight_decay: Decoupled weight decay (scaled by ``lr``).
         hidden_size, hidden_layers: MetaMLP geometry. Note ELO counts hidden
             *weight* layers, so the original ``hidden_layers=2`` maps to
             ``MetaMLP(hidden_layers=1)`` (input + one hidden + output).
@@ -64,14 +62,8 @@ class ELO_naive(Optimizer):
     def __init__(
         self,
         params,
-        num_steps,
+        lr=0.001,
         exp_mult=0.001,
-        step_mult=0.001,
-        init_lr=0.0,
-        warmup_fraction=0.05,
-        warmup_steps=0,
-        use_lo_cosine_scheduler=False,
-        step_mult_min=1e-4,
         weight_decay=0.0,
         hidden_size=32,
         hidden_layers=1,
@@ -84,25 +76,18 @@ class ELO_naive(Optimizer):
         checkpoint_path: Optional[str] = None,
         network: Optional[MetaMLP] = None,
     ):
-        if num_steps is None:
-            raise ValueError("ELO_naive requires num_steps for the LR schedule.")
-
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
         defaults = dict(
-            num_steps=num_steps,
+            lr=lr,
             exp_mult=exp_mult,
-            step_mult=step_mult,
-            init_lr=init_lr,
-            warmup_fraction=warmup_fraction,
-            warmup_steps=warmup_steps,
-            use_lo_cosine_scheduler=use_lo_cosine_scheduler,
-            step_mult_min=step_mult_min,
             weight_decay=weight_decay,
             clip_grad=clip_grad,
             clip_norm=clip_norm,
         )
         super().__init__(params, defaults)
+
+        # Place state / meta-network on the same device as the parameters.
+        first_param = next(p for g in self.param_groups for p in g["params"])
+        self.device = first_param.device.type
 
         self.initial_momentum_decays = torch.tensor(
             initial_momentum_decays, dtype=torch.float32, device=self.device
@@ -130,30 +115,6 @@ class ELO_naive(Optimizer):
             )
         self.network = self.network.to(self.device)
 
-    def _scheduled_lr(self, iteration, group):
-        """Warmup → constant (or cosine) schedule, matching the JAX version."""
-        num_steps = group["num_steps"]
-        step_mult = group["step_mult"]
-        init_lr = group["init_lr"]
-        if group["warmup_fraction"] > 0:
-            warmup_n = group["warmup_fraction"] * num_steps
-        else:
-            warmup_n = group["warmup_steps"]
-        warmup_n = max(float(warmup_n), 1.0)
-        it = float(iteration)
-
-        if group["use_lo_cosine_scheduler"]:
-            frac = min(max(it / max(num_steps - 1, 1), 0.0), 1.0)
-            step_mult_min = group["step_mult_min"]
-            base = step_mult_min + (step_mult - step_mult_min) * 0.5 * (
-                1.0 + np.cos(np.pi * frac)
-            )
-        else:
-            base = step_mult
-
-        warmup_lr = init_lr + (step_mult - init_lr) * min(it / warmup_n, 1.0)
-        return warmup_lr if it < warmup_n else base
-
     def _global_grad_scale(self, clip_norm):
         total = torch.zeros((), device=self.device)
         for group in self.param_groups:
@@ -175,7 +136,7 @@ class ELO_naive(Optimizer):
             group["step"] = iteration + 1
             exp_mult = group["exp_mult"]
             weight_decay = group["weight_decay"]
-            scheduled_lr = self._scheduled_lr(iteration, group)
+            lr = group["lr"]
             scale = grad_scales.get(id(group), 1.0)
 
             for p in group["params"]:
@@ -273,5 +234,5 @@ class ELO_naive(Optimizer):
 
                 direction, magnitude = self.network(inp_stack).split(1, dim=-1)
                 step = (direction * torch.exp(magnitude * exp_mult)).squeeze(-1)
-                p.add_(step + weight_decay * p, alpha=-scheduled_lr)
+                p.add_(step + weight_decay * p, alpha=-lr)
         return loss

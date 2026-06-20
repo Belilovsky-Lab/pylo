@@ -13,8 +13,12 @@ from pylo.models.Meta_MLP import MetaMLP
 from pylo.optim import ELO_naive
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-SCALING_L2O = "/home/mila/h/huangx/scaling_l2o"
-ELO_SRC = os.path.join(SCALING_L2O, "src/learned_optimizers/elo_adfac_mlp_lopt.py")
+SCALING_L2O = os.environ.get("SCALING_L2O", "")
+ELO_SRC = (
+    os.path.join(SCALING_L2O, "src/learned_optimizers/elo_adfac_mlp_lopt.py")
+    if SCALING_L2O
+    else ""
+)
 
 
 class SmallNet(nn.Module):
@@ -31,7 +35,7 @@ def test_step_runs_and_updates():
     torch.manual_seed(0)
     model = SmallNet().to(DEVICE)
     before = [p.clone() for p in model.parameters()]
-    optimizer = ELO_naive(model.parameters(), num_steps=50, step_mult=1e-2)
+    optimizer = ELO_naive(model.parameters(), lr=1e-2)
     x = torch.randn(16, 10, device=DEVICE)
     y = torch.randn(16, 1, device=DEVICE)
     for _ in range(6):
@@ -48,7 +52,7 @@ def test_elo_resume(tmp_path):
     net = MetaMLP(input_size=39, hidden_size=32, hidden_layers=1).to(DEVICE)
 
     model = SmallNet().to(DEVICE)
-    optimizer = ELO_naive(model.parameters(), num_steps=50, step_mult=1e-2, network=net)
+    optimizer = ELO_naive(model.parameters(), lr=1e-2, network=net)
     x = torch.randn(32, 10, device=DEVICE)
     y = torch.randn(32, 1, device=DEVICE)
 
@@ -69,7 +73,7 @@ def test_elo_resume(tmp_path):
     orig_final = [p.clone().detach() for p in model.parameters()]
 
     loaded_model = SmallNet().to(DEVICE)
-    loaded_opt = ELO_naive(loaded_model.parameters(), num_steps=50, step_mult=1e-2, network=net)
+    loaded_opt = ELO_naive(loaded_model.parameters(), lr=1e-2, network=net)
     ckpt = torch.load(path)
     loaded_model.load_state_dict(ckpt["model"])
     loaded_opt.load_state_dict(ckpt["optimizer"])
@@ -96,8 +100,10 @@ def test_jax_numerical_alignment():
     spec.loader.exec_module(elo)
 
     N = 50
+    # pylo's ELO_naive has no internal schedule; pin the JAX reference to a
+    # constant LR (init_lr == step_mult) so the constant-lr torch side matches.
     lopt = elo.ELO_AdafacMLPLOpt(
-        meta_train=False, exp_mult=0.001, step_mult=0.001, init_lr=0.0,
+        meta_train=False, exp_mult=0.001, step_mult=0.001, init_lr=0.001,
         warmup_fraction=0.05, weight_decay=0.0, hidden_size=32, hidden_layers=2,
         initial_momentum_decays=(0.9, 0.99, 0.999), initial_rms_decays=(0.999,),
         initial_adafactor_decays=(0.9, 0.99, 0.999), clip_grad=False,
@@ -131,7 +137,7 @@ def test_jax_numerical_alignment():
 
     pw = torch.nn.Parameter(torch.tensor(W))
     pb = torch.nn.Parameter(torch.tensor(B))
-    topt = ELO_naive([pw, pb], num_steps=N, network=net)
+    topt = ELO_naive([pw, pb], lr=0.001, network=net)
     topt.device = "cpu"
     for a in ("initial_momentum_decays", "initial_rms_decays", "initial_adafactor_decays"):
         setattr(topt, a, getattr(topt, a).cpu())
