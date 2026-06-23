@@ -133,7 +133,14 @@ class AdafacLO_naive(Optimizer):
         mup_lrs=None,
         hf_key: Optional[str] = "btherien/mulo",
     ):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Place state / meta-network on the parameters' device (materialize the
+        # iterable first so peeking does not consume a generator before super()).
+        params = list(params)
+        probe = params[0]
+        if isinstance(probe, dict):
+            probe["params"] = list(probe["params"])
+            probe = probe["params"][0]
+        self.device = probe.device.type
         momentum_decays = torch.tensor(momentum_decays).to(self.device)
         rms_decays = torch.tensor(rms_decays).to(self.device)
         adafactor_decays = torch.tensor(adafactor_decays).to(self.device)
