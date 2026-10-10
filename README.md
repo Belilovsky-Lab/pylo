@@ -18,7 +18,7 @@ PyLO provides efficient PyTorch implementations of cutting-edge learned optimize
 - **Hugging Face integration** for sharing and loading meta-models
 
 Learned optimizers:
-* ELO series: [https://arxiv.org/abs/2506.10315](https://arxiv.org/abs/2506.10315)
+* ELO series: [https://arxiv.org/abs/2607.06772](https://arxiv.org/abs/2607.06772)
 
 # Installation
 
