@@ -281,6 +281,8 @@ def test_jax_end_to_end_alignment(which):
             initial_momentum_decays=(0.9, 0.99, 0.999),
             initial_rms_decays=(0.95,),
             initial_adafactor_decays=(0.9, 0.99, 0.999),
+            # meta-test recipe: both bias corrections on (pylo defaults)
+            adam_bias_correction=True, bias_correction=True,
             meta_train=False, **cfg,
         )
         topt_cls = ELO_CELO2_naive
@@ -295,7 +297,7 @@ def test_jax_end_to_end_alignment(which):
     pb = torch.nn.Parameter(torch.tensor(B))
     topt = topt_cls(
         [pw, pb], lr=LR, weight_decay=0.1, clip_grad=True, clip_norm=1.0,
-        network=net,
+        adam_lr_mult=cfg["adam_lr_mult"], network=net,
     )
     topt.device = "cpu"
     for a in ("initial_momentum_decays", "initial_rms_decays", "initial_adafactor_decays"):

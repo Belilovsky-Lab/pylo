@@ -46,8 +46,13 @@ class ELO_CELO2_naive(Optimizer):
         clip_grad=True,
         clip_norm=1.0,
         # AdamW for 1D params (shares momentum[0] / rms[-1] accumulators)
-        adam_lr_mult=1.0,
+        adam_lr_mult=20.0,
         adam_weight_decay=None,
+        # Bias correction of the 1D AdamW moments and of the CELO2 MLP input
+        # features (m / rms / v_row / v_col). The JAX ELO-CELO2 meta-trains with
+        # both off and evaluates (meta-test) with both on.
+        adam_bias_correction=True,
+        bias_correction=True,
         use_adamw_for_1d=True,
         # CELO2 backbone
         orthogonalize=True,
@@ -75,6 +80,8 @@ class ELO_CELO2_naive(Optimizer):
             adam_weight_decay=(
                 adam_weight_decay if adam_weight_decay is not None else weight_decay
             ),
+            adam_bias_correction=adam_bias_correction,
+            bias_correction=bias_correction,
             use_adamw_for_1d=use_adamw_for_1d,
             orthogonalize=orthogonalize,
             clip_grad=clip_grad,
@@ -170,13 +177,23 @@ class ELO_CELO2_naive(Optimizer):
             state["fac_vec_v"] = new_v
         return mom, rms, fac_g
 
-    def _celo2_step(self, p, grad, state, group):
+    def _celo2_step(self, p, grad, state, group, t):
         """The CELO2 MLP update for a single (2D+) parameter, shape == p.shape."""
         p_shape = tuple(p.shape)
         batch_p = p.unsqueeze(-1)
         batch_g = grad.unsqueeze(-1)
 
         mom, rms, fac_g = self._update_accumulators(state, batch_g, p_shape)
+        f_dims = factored_dims(p_shape)
+        if f_dims is not None:
+            v_row, v_col = state["fac_vec_row"], state["fac_vec_col"]
+        # Bias-correct the MLP input features only; fac_g stays raw (as in JAX).
+        if group["bias_correction"]:
+            mom = mom / (1.0 - self.initial_momentum_decays ** t)
+            rms = rms / (1.0 - self.initial_rms_decays ** t)
+            if f_dims is not None:
+                v_row = v_row / (1.0 - self.initial_adafactor_decays ** t)
+                v_col = v_col / (1.0 - self.initial_adafactor_decays ** t)
         rsqrt = torch.rsqrt(rms + 1e-8)
 
         inps = [
@@ -191,10 +208,8 @@ class ELO_CELO2_naive(Optimizer):
             batch_g * rsqrt,
         ]
 
-        f_dims = factored_dims(p_shape)
         if f_dims is not None:
             d1, d0 = f_dims
-            v_row, v_col = state["fac_vec_row"], state["fac_vec_col"]
             rp_row = [1] * (1 + len(p_shape))
             rp_col = [1] * (1 + len(p_shape))
             rp_row[d0] = p_shape[d0]
@@ -296,11 +311,14 @@ class ELO_CELO2_naive(Optimizer):
                     # AdamW over the shared momentum[0] / rms[-1] accumulators.
                     batch_g = grad.unsqueeze(-1)
                     mom, rms, _ = self._update_accumulators(state, batch_g, p_shape)
-                    m_bc = mom[..., 0] / (1.0 - beta1 ** t)
-                    v_bc = rms[..., -1] / (1.0 - beta2 ** t)
+                    m_bc = mom[..., 0]
+                    v_bc = rms[..., -1]
+                    if group["adam_bias_correction"]:
+                        m_bc = m_bc / (1.0 - beta1 ** t)
+                        v_bc = v_bc / (1.0 - beta2 ** t)
                     adam_step = m_bc / (torch.sqrt(v_bc) + 1e-8)
                     p.add_(adam_step + group["adam_weight_decay"] * p, alpha=-adam_lr)
                 else:
-                    step = self._celo2_step(p, grad, state, group)
+                    step = self._celo2_step(p, grad, state, group, t)
                     p.add_(step + group["weight_decay"] * p, alpha=-lr)
         return loss

@@ -50,6 +50,11 @@ class ELO_CELO2_CUDA(Optimizer):
         # AdamW for 1D params (shares momentum[0] / rms accumulators)
         adam_lr_mult=20.0,
         adam_weight_decay=None,
+        # Bias correction of the 1D AdamW moments and of the CELO2 MLP input
+        # features (m / rms / v_row / v_col). The JAX ELO-CELO2 meta-trains with
+        # both off and evaluates (meta-test) with both on.
+        adam_bias_correction=True,
+        bias_correction=True,
         use_adamw_for_1d=True,
         # CELO2 backbone
         orthogonalize=True,
@@ -82,6 +87,8 @@ class ELO_CELO2_CUDA(Optimizer):
             adam_weight_decay=(
                 adam_weight_decay if adam_weight_decay is not None else weight_decay
             ),
+            adam_bias_correction=adam_bias_correction,
+            bias_correction=bias_correction,
             use_adamw_for_1d=use_adamw_for_1d,
             orthogonalize=orthogonalize,
             clip_grad=clip_grad,
@@ -246,8 +253,11 @@ class ELO_CELO2_CUDA(Optimizer):
                 is_1d = p.dim() <= 1 or force_adam
                 if use_adamw_for_1d and is_1d:
                     # AdamW over the shared momentum[0] / rms accumulators.
-                    m_bc = m[0] / (1.0 - beta1 ** t)
-                    v_bc = rms / (1.0 - beta2 ** t)
+                    m_bc = m[0]
+                    v_bc = rms
+                    if group["adam_bias_correction"]:
+                        m_bc = m_bc / (1.0 - beta1 ** t)
+                        v_bc = v_bc / (1.0 - beta2 ** t)
                     adam_step = m_bc / (torch.sqrt(v_bc) + 1e-8)
                     p.add_(adam_step + group["adam_weight_decay"] * p, alpha=-adam_lr)
                     continue
@@ -257,6 +267,19 @@ class ELO_CELO2_CUDA(Optimizer):
                     state, grad
                 )
 
+                # Bias-correct the MLP input features. row_factor / col_factor stay
+                # raw: they also build fac_g, which JAX leaves uncorrected, and in
+                # fac_mom_mult the correction is a per-channel scalar that the
+                # kernel's per-feature second-moment normalization cancels.
+                m_feat, rms_feat, fr_feat, fc_feat = m, rms, fac_r, fac_c
+                if group["bias_correction"]:
+                    bc_m = (1.0 - self.beta_m ** t).view([-1] + [1] * grad.dim())
+                    bc_f = (1.0 - self.beta_fac ** t).view([-1] + [1] * grad.dim())
+                    m_feat = m / bc_m
+                    rms_feat = rms / (1.0 - float(self.beta_rms[-1]) ** t)
+                    fr_feat = fac_r / bc_f
+                    fc_feat = fac_c / bc_f
+
                 second_moment = torch.zeros(
                     _KERNEL_INPUT_DIM, dtype=torch.float32, device=self.device
                 )
@@ -265,10 +288,10 @@ class ELO_CELO2_CUDA(Optimizer):
                 celo2_cuda_kernel.celo2_kernel(
                     grad.contiguous(),
                     p,
-                    m.to(dt).contiguous(),
-                    rms.to(dt).contiguous(),
-                    fac_r.to(dt).contiguous(),
-                    fac_c.to(dt).contiguous(),
+                    m_feat.to(dt).contiguous(),
+                    rms_feat.to(dt).contiguous(),
+                    fr_feat.to(dt).contiguous(),
+                    fc_feat.to(dt).contiguous(),
                     row_factor.to(dt).contiguous(),
                     col_factor.to(dt).contiguous(),
                     second_moment,
